@@ -1,0 +1,2096 @@
+import pygame
+import sys
+import os
+import math
+import random
+import time
+
+# Initialize Pygame
+pygame.init()
+
+# Constants
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
+ASPECT_RATIO = WINDOW_WIDTH / WINDOW_HEIGHT  # Calculate the aspect ratio
+PLAYER_SPEED = 3
+PLAYER_SIZE = 72  # Increased from 48 to make the character larger
+ANIMATION_SPEED = 0.08  # Reduced from 0.2 to make animations play faster
+SPRITE_SIZE = 24  # The size of each sprite in the spritesheet
+ACCELERATION = 10.0  # How quickly to reach max speed
+DECELERATION = 15.0  # Increased from 6.0 to make stops more snappy
+PROJECTILE_SPEED = 10.0  # Speed of projectiles
+PROJECTILE_SIZE = 8  # Size of projectile
+PROJECTILE_COLOR = (180, 100, 255)  # Purple projectile to match wizard's magic
+BAT_SIZE = 40  # Size of the bats
+BAT_SPEED = 100  # Pixels per second
+NUM_BATS = 5  # Number of bats in the game
+SKELETON_SIZE = 48  # Size of the skeletons
+SKELETON_SPEED = 70  # Pixels per second (slower than bats)
+SKELETON_ATTACK_RANGE = 60  # Distance at which skeletons can attack
+SKELETON_ATTACK_COOLDOWN = 1.5  # Time between skeleton attacks in seconds
+NUM_SKELETONS = 2  # Number of skeletons per wave
+DRAGON_SIZE = 120  # Size of the dragon boss
+DRAGON_FIREBALL_SPEED = 300.0  # Speed of dragon fireballs (slower than player projectiles)
+DRAGON_FIREBALL_SIZE = 16  # Size of dragon fireballs
+DRAGON_FIREBALL_COLOR = (255, 100, 0)  # Orange-red for fireballs
+DRAGON_ATTACK_COOLDOWN = 0.05  # Time between dragon attacks in seconds
+BOSS_SCORE_THRESHOLD = 1000  # Score needed to trigger the dragon boss
+EXPLOSION_PARTICLES = 20  # Number of particles per explosion
+EXPLOSION_SPEED = 200  # Speed of explosion particles
+EXPLOSION_LIFETIME = 0.5  # How long explosions last in seconds
+EXPLOSION_COLORS = [(255, 100, 0), (255, 50, 0), (255, 0, 0)]  # Orange to red colors
+
+# Game states
+GAME_STATE_TITLE_SCREEN = -1
+GAME_STATE_PLAYING = 0
+GAME_STATE_PAUSED = 1
+GAME_STATE_GAME_OVER = 2
+GAME_STATE_VICTORY = 3
+
+# Room constants
+WALL_COLOR = (100, 100, 100)  # Gray walls
+DOOR_WIDTH = 100  # Width of doors
+DOOR_COLOR = (139, 69, 19)  # Brown doors
+DOOR_LOCKED_COLOR = (139, 0, 0)  # Dark red for locked doors
+ROOM_PADDING = 50  # Padding around the edges of the room
+
+# Initialize pygame
+pygame.init()
+FULLSCREEN = True  # Track fullscreen state
+screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.FULLSCREEN)
+pygame.display.set_caption("Dungeon Crawler")
+clock = pygame.time.Clock()
+
+# Game surface for maintaining aspect ratio
+game_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+game_rect = game_surface.get_rect()
+
+# Create a DragonFireball class
+class DragonFireball:
+    def __init__(self, x, y, dx, dy):
+        self.x = x
+        self.y = y
+        self.dx = dx
+        self.dy = dy
+        self.speed = DRAGON_FIREBALL_SPEED
+        self.size = DRAGON_FIREBALL_SIZE
+        self.rect = pygame.Rect(x - self.size // 2, y - self.size // 2, self.size, self.size)
+        
+    def update(self, dt):
+        # Move the fireball
+        self.x += self.dx * self.speed * dt
+        self.y += self.dy * self.speed * dt
+        
+        # Update the rect for collision detection
+        self.rect.x = int(self.x - self.size // 2)
+        self.rect.y = int(self.y - self.size // 2)
+        
+    def draw(self, surface):
+        # Draw the fireball as a red circle with orange/yellow gradient
+        for i in range(3):
+            size = self.size - i * 3
+            if size <= 0:
+                continue
+                
+            # Color gradient from red (outer) to yellow (inner)
+            if i == 0:
+                color = (255, 0, 0)  # Red (outer)
+            elif i == 1:
+                color = (255, 150, 0)  # Orange (middle)
+            else:
+                color = (255, 255, 0)  # Yellow (inner)
+                
+            pygame.draw.circle(surface, color, (int(self.x), int(self.y)), size)
+
+class Projectile:
+    def __init__(self, x, y, target_x, target_y):
+        self.x = x
+        self.y = y
+        self.rect = pygame.Rect(x - PROJECTILE_SIZE // 2, y - PROJECTILE_SIZE // 2, 
+                              PROJECTILE_SIZE, PROJECTILE_SIZE)
+        
+        # Calculate direction vector
+        dx = target_x - x
+        dy = target_y - y
+        length = math.sqrt(dx * dx + dy * dy)
+        self.dx = (dx / length) * PROJECTILE_SPEED if length > 0 else 0
+        self.dy = (dy / length) * PROJECTILE_SPEED if length > 0 else 0
+        
+        # Add particle trail effect
+        self.trail_timer = 0
+        self.trail_interval = 0.05  # Time between trail particles
+        
+    def update(self, dt):
+        # Update position
+        self.x += self.dx
+        self.y += self.dy
+        self.rect.x = int(self.x - PROJECTILE_SIZE // 2)
+        self.rect.y = int(self.y - PROJECTILE_SIZE // 2)
+        
+        # Check if out of bounds
+        if (self.x < 0 or self.x > WINDOW_WIDTH or 
+            self.y < 0 or self.y > WINDOW_HEIGHT):
+            return False
+            
+        return True
+        
+    def draw(self, surface):
+        # Draw a glowing circle for the projectile
+        glow_size = PROJECTILE_SIZE * 2
+        glow_surface = pygame.Surface((glow_size, glow_size), pygame.SRCALPHA)
+        
+        # Draw outer glow (semi-transparent)
+        pygame.draw.circle(glow_surface, (180, 100, 255, 100), 
+                         (glow_size // 2, glow_size // 2), glow_size // 2)
+        
+        # Draw inner core (solid)
+        pygame.draw.circle(glow_surface, PROJECTILE_COLOR, 
+                         (glow_size // 2, glow_size // 2), PROJECTILE_SIZE // 2)
+        
+        # Blit the glow surface
+        surface.blit(glow_surface, 
+                   (int(self.x - glow_size // 2), int(self.y - glow_size // 2)))
+
+# Player class
+class Player:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.center_x = x + PLAYER_SIZE // 2
+        self.center_y = y + PLAYER_SIZE // 2
+        self.speed = PLAYER_SPEED
+        self.velocity_x = 0
+        self.velocity_y = 0
+        self.facing_direction = 'down'
+        self.animation_timer = 0
+        self.current_frame = 0
+        self.animations = {}
+        self.projectiles = []
+        self.alive = True
+        self.moving = False
+        self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        self.load_sprites()
+    
+    def lerp(self, start, end, amount):
+        return start + (end - start) * amount
+
+    def load_sprites(self):
+        try:
+            # Initialize animations dictionary
+            self.animations = {
+                'down': [],
+                'up': [],
+                'left': [],
+                'right': []
+            }
+            
+            # Create retro-style sprites programmatically
+            for direction in ['down', 'up', 'left', 'right']:
+                # Create frames for each direction
+                for frame in range(4):
+                    sprite = self.create_retro_sprite(direction, frame)
+                    self.animations[direction].append(sprite)
+        except Exception as e:
+            print(f"Error creating sprites: {e}")
+            # Create fallback sprites
+            for direction in ['down', 'up', 'left', 'right']:
+                self.animations[direction] = [self.create_fallback_sprite()]
+    
+    def create_retro_sprite(self, direction, frame_num):
+        # Create a blank surface with transparency
+        sprite = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
+        
+        # Colors - pixel art wizard theme
+        robe_color = (20, 70, 160)  # Deep blue
+        hat_color = (20, 70, 160)  # Same blue
+        skin_color = (255, 223, 196)  # Light skin tone
+        beard_color = (220, 220, 220)  # Light gray/white
+        staff_color = (139, 69, 19)  # Brown
+        magic_color = (180, 100, 255)  # Purple magic
+        
+        # Center point of sprite
+        center_x = PLAYER_SIZE // 2
+        center_y = PLAYER_SIZE // 2
+        
+        # Draw robe (triangle)
+        robe_width = PLAYER_SIZE * 0.6
+        robe_height = PLAYER_SIZE * 0.6
+        robe_points = [
+            (center_x, center_y - robe_height * 0.3),  # Top
+            (center_x - robe_width / 2, center_y + robe_height / 2),  # Bottom left
+            (center_x + robe_width / 2, center_y + robe_height / 2)   # Bottom right
+        ]
+        pygame.draw.polygon(sprite, robe_color, robe_points)
+        
+        # Draw head (circle)
+        head_radius = int(PLAYER_SIZE * 0.15)
+        head_pos = (center_x, center_y - robe_height * 0.3 - head_radius * 0.5)
+        pygame.draw.circle(sprite, skin_color, head_pos, head_radius)
+        
+        # Draw wizard hat (triangle)
+        hat_height = PLAYER_SIZE * 0.3
+        hat_width = PLAYER_SIZE * 0.25
+        hat_points = [
+            (center_x, head_pos[1] - hat_height),  # Top of hat
+            (center_x - hat_width / 2, head_pos[1] - head_radius * 0.5),  # Left base
+            (center_x + hat_width / 2, head_pos[1] - head_radius * 0.5)   # Right base
+        ]
+        pygame.draw.polygon(sprite, hat_color, hat_points)
+        
+        # Draw hat tip (circle)
+        hat_tip_radius = int(PLAYER_SIZE * 0.04)
+        hat_tip_pos = (center_x, head_pos[1] - hat_height)
+        pygame.draw.circle(sprite, magic_color, hat_tip_pos, hat_tip_radius)
+        
+        # Draw beard (depends on direction)
+        beard_length = PLAYER_SIZE * 0.15
+        
+        if direction == 'down':
+            beard_points = [
+                (center_x, head_pos[1] + head_radius * 0.5),  # Top
+                (center_x - head_radius * 0.7, head_pos[1] + head_radius * 0.5 + beard_length),  # Bottom left
+                (center_x + head_radius * 0.7, head_pos[1] + head_radius * 0.5 + beard_length)   # Bottom right
+            ]
+            pygame.draw.polygon(sprite, beard_color, beard_points)
+        elif direction == 'up':
+            # No beard visible from back
+            pass
+        elif direction == 'left':
+            beard_points = [
+                (center_x - head_radius * 0.5, head_pos[1] + head_radius * 0.3),  # Top
+                (center_x - head_radius * 0.5 - beard_length * 0.7, head_pos[1] + head_radius * 0.3),  # Left
+                (center_x - head_radius * 0.5 - beard_length * 0.5, head_pos[1] + head_radius * 0.8)   # Bottom
+            ]
+            pygame.draw.polygon(sprite, beard_color, beard_points)
+        else:  # right
+            beard_points = [
+                (center_x + head_radius * 0.5, head_pos[1] + head_radius * 0.3),  # Top
+                (center_x + head_radius * 0.5 + beard_length * 0.7, head_pos[1] + head_radius * 0.3),  # Right
+                (center_x + head_radius * 0.5 + beard_length * 0.5, head_pos[1] + head_radius * 0.8)   # Bottom
+            ]
+            pygame.draw.polygon(sprite, beard_color, beard_points)
+        
+        # Draw staff (depends on direction and frame)
+        staff_width = PLAYER_SIZE * 0.06
+        staff_length = PLAYER_SIZE * 0.5
+        staff_orb_radius = int(PLAYER_SIZE * 0.08)
+        
+        # Staff position varies with direction and animation frame
+        staff_angle = math.sin(frame_num * math.pi / 2) * 0.2  # Subtle staff movement
+        
+        if direction == 'down':
+            staff_x = center_x + robe_width * 0.4
+            staff_y = center_y
+            staff_end_x = staff_x
+            staff_end_y = staff_y + staff_length
+            # Add staff angle animation
+            staff_end_x += math.sin(staff_angle) * staff_length * 0.2
+            
+            # Draw staff
+            pygame.draw.line(sprite, staff_color, (staff_x, staff_y), 
+                           (staff_end_x, staff_end_y), int(staff_width))
+            
+            # Draw orb on top of staff
+            pygame.draw.circle(sprite, magic_color, (staff_end_x, staff_end_y), staff_orb_radius)
+            
+        elif direction == 'up':
+            staff_x = center_x - robe_width * 0.4
+            staff_y = center_y
+            staff_end_x = staff_x
+            staff_end_y = staff_y + staff_length
+            # Add staff angle animation
+            staff_end_x += math.sin(staff_angle) * staff_length * 0.2
+            
+            # Draw staff
+            pygame.draw.line(sprite, staff_color, (staff_x, staff_y), 
+                           (staff_end_x, staff_end_y), int(staff_width))
+            
+            # Draw orb on top of staff
+            pygame.draw.circle(sprite, magic_color, (staff_end_x, staff_end_y), staff_orb_radius)
+            
+        elif direction == 'left':
+            staff_x = center_x
+            staff_y = center_y + robe_height * 0.3
+            staff_end_x = staff_x - staff_length
+            staff_end_y = staff_y
+            # Add staff angle animation
+            staff_end_y += math.sin(staff_angle) * staff_length * 0.2
+            
+            # Draw staff
+            pygame.draw.line(sprite, staff_color, (staff_x, staff_y), 
+                           (staff_end_x, staff_end_y), int(staff_width))
+            
+            # Draw orb on top of staff
+            pygame.draw.circle(sprite, magic_color, (staff_end_x, staff_end_y), staff_orb_radius)
+            
+        else:  # right
+            staff_x = center_x
+            staff_y = center_y + robe_height * 0.3
+            staff_end_x = staff_x + staff_length
+            staff_end_y = staff_y
+            # Add staff angle animation
+            staff_end_y += math.sin(staff_angle) * staff_length * 0.2
+            
+            # Draw staff
+            pygame.draw.line(sprite, staff_color, (staff_x, staff_y), 
+                           (staff_end_x, staff_end_y), int(staff_width))
+            
+            # Draw orb on top of staff
+            pygame.draw.circle(sprite, magic_color, (staff_end_x, staff_end_y), staff_orb_radius)
+        
+        # Draw magic particles around orb (animated)
+        for i in range(3):
+            angle = frame_num * 0.5 + i * (2 * math.pi / 3)
+            particle_distance = staff_orb_radius * 1.5
+            particle_x = staff_end_x + math.cos(angle) * particle_distance
+            particle_y = staff_end_y + math.sin(angle) * particle_distance
+            particle_radius = int(PLAYER_SIZE * 0.02)
+            pygame.draw.circle(sprite, magic_color, (int(particle_x), int(particle_y)), particle_radius)
+        
+        return sprite
+    
+    def create_fallback_sprite(self):
+        # Create a simple colored square as fallback
+        sprite = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(sprite, (255, 0, 0), pygame.Rect(0, 0, PLAYER_SIZE, PLAYER_SIZE))
+        return sprite
+
+    def update_facing_direction(self, mouse_pos):
+        # Calculate angle between player center and mouse
+        dx = mouse_pos[0] - self.center_x
+        dy = mouse_pos[1] - self.center_y
+        angle = math.degrees(math.atan2(dy, dx))
+        
+        # Convert angle to facing direction
+        if -45 <= angle <= 45:  # Right
+            self.facing_direction = 'right'
+        elif 45 < angle <= 135:  # Down
+            self.facing_direction = 'down'
+        elif -135 <= angle < -45:  # Up
+            self.facing_direction = 'up'
+        else:  # Left (angle > 135 or angle < -135)
+            self.facing_direction = 'left'
+
+    def move(self, dx, dy, dt):
+        # Calculate target velocities
+        target_velocity_x = dx * self.speed
+        target_velocity_y = dy * self.speed
+        
+        # Normalize diagonal movement
+        if dx != 0 and dy != 0:
+            target_velocity_x *= 0.7071  # 1/sqrt(2)
+            target_velocity_y *= 0.7071
+        
+        # Smoothly interpolate current velocity toward target velocity
+        if dx != 0 or dy != 0:  # Accelerating
+            self.velocity_x = self.lerp(self.velocity_x, target_velocity_x, ACCELERATION * dt)
+            self.velocity_y = self.lerp(self.velocity_y, target_velocity_y, ACCELERATION * dt)
+        else:  # Decelerating
+            self.velocity_x = self.lerp(self.velocity_x, 0, DECELERATION * dt)
+            self.velocity_y = self.lerp(self.velocity_y, 0, DECELERATION * dt)
+        
+        # Update position
+        new_x = self.x + self.velocity_x
+        new_y = self.y + self.velocity_y
+        
+        # Check if we're in a doorway and the room is cleared or no bats are alive
+        in_doorway = False
+        
+        # Top door
+        if (new_y < ROOM_PADDING and 
+            WINDOW_WIDTH // 2 - DOOR_WIDTH // 2 < self.center_x < WINDOW_WIDTH // 2 + DOOR_WIDTH // 2):
+            in_doorway = True
+        
+        # Right door
+        if (new_x + PLAYER_SIZE > WINDOW_WIDTH - ROOM_PADDING and 
+            WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2 < self.center_y < WINDOW_HEIGHT // 2 + DOOR_WIDTH // 2):
+            in_doorway = True
+            
+        # Bottom door
+        if (new_y + PLAYER_SIZE > WINDOW_HEIGHT - ROOM_PADDING and 
+            WINDOW_WIDTH // 2 - DOOR_WIDTH // 2 < self.center_x < WINDOW_WIDTH // 2 + DOOR_WIDTH // 2):
+            in_doorway = True
+            
+        # Left door
+        if (new_x < ROOM_PADDING and 
+            WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2 < self.center_y < WINDOW_HEIGHT // 2 + DOOR_WIDTH // 2):
+            in_doorway = True
+        
+        # If we're in a doorway, don't restrict movement
+        if not in_doorway:
+            # Keep player within screen bounds, accounting for room padding
+            buffer = 2
+            new_x = max(ROOM_PADDING + buffer, min(new_x, WINDOW_WIDTH - ROOM_PADDING - PLAYER_SIZE - buffer))
+            new_y = max(ROOM_PADDING + buffer, min(new_y, WINDOW_HEIGHT - ROOM_PADDING - PLAYER_SIZE - buffer))
+        
+        # Apply the new position
+        self.x = new_x
+        self.y = new_y
+        
+        # Update rect for collision detection
+        self.rect.x = int(self.x)
+        self.rect.y = int(self.y)
+        
+        # Update center position
+        self.center_x = self.x + PLAYER_SIZE // 2
+        self.center_y = self.y + PLAYER_SIZE // 2
+        
+        # Update moving state based on actual velocity rather than input
+        self.moving = abs(self.velocity_x) > 0.01 or abs(self.velocity_y) > 0.01
+
+    def update_animation(self, dt):
+        if self.moving:
+            self.animation_timer += dt
+            if self.animation_timer >= ANIMATION_SPEED:
+                self.animation_timer = 0
+                self.current_frame = (self.current_frame + 1) % len(self.animations[self.facing_direction])
+        else:
+            self.current_frame = 0  # Reset to standing frame when not moving
+
+    def shoot(self, target_x, target_y):
+        # Create new projectile from center of player
+        self.projectiles.append(
+            Projectile(self.center_x, self.center_y, target_x, target_y)
+        )
+
+    def update_projectiles(self, dt):
+        # Update all projectiles and remove ones that are off screen
+        self.projectiles = [proj for proj in self.projectiles 
+                          if proj.update(dt)]
+
+    def draw_projectiles(self, surface):
+        for projectile in self.projectiles:
+            projectile.draw(surface)
+
+    def draw(self, surface):
+        current_sprite = self.animations[self.facing_direction][self.current_frame]
+        surface.blit(current_sprite, self.rect)
+
+class ExplosionParticle:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        angle = random.uniform(0, 2 * math.pi)
+        speed = random.uniform(EXPLOSION_SPEED * 0.5, EXPLOSION_SPEED)
+        self.dx = math.cos(angle) * speed
+        self.dy = math.sin(angle) * speed
+        self.lifetime = EXPLOSION_LIFETIME
+        self.color = random.choice(EXPLOSION_COLORS)
+        self.size = random.randint(2, 6)
+
+    def update(self, dt):
+        self.x += self.dx * dt
+        self.y += self.dy * dt
+        self.lifetime -= dt
+        return self.lifetime > 0
+
+    def draw(self, surface):
+        alpha = int(255 * (self.lifetime / EXPLOSION_LIFETIME))
+        color = (*self.color, alpha)
+        surf = pygame.Surface((self.size * 2, self.size * 2), pygame.SRCALPHA)
+        pygame.draw.circle(surf, color, (self.size, self.size), self.size)
+        surface.blit(surf, (int(self.x - self.size), int(self.y - self.size)))
+
+class Bat:
+    def __init__(self, target_x, target_y):
+        # Randomly choose a side to spawn from (0=top, 1=right, 2=bottom, 3=left)
+        side = random.randint(0, 3)
+        if side == 0:  # Top
+            self.x = random.randint(0, WINDOW_WIDTH)
+            self.y = -BAT_SIZE
+        elif side == 1:  # Right
+            self.x = WINDOW_WIDTH + BAT_SIZE
+            self.y = random.randint(0, WINDOW_HEIGHT)
+        elif side == 2:  # Bottom
+            self.x = random.randint(0, WINDOW_WIDTH)
+            self.y = WINDOW_HEIGHT + BAT_SIZE
+        else:  # Left
+            self.x = -BAT_SIZE
+            self.y = random.randint(0, WINDOW_HEIGHT)
+
+        self.target_x = target_x
+        self.target_y = target_y
+        self.rect = pygame.Rect(self.x, self.y, BAT_SIZE, BAT_SIZE)
+        self.alive = True
+        self.arrived = False
+        
+        # Calculate direction to target
+        dx = self.target_x - self.x
+        dy = self.target_y - self.y
+        length = math.sqrt(dx * dx + dy * dy)
+        self.dx = (dx / length) * BAT_SPEED if length > 0 else 0
+        self.dy = (dy / length) * BAT_SPEED if length > 0 else 0
+        
+        # Animation
+        self.bob_offset = 0
+        self.bob_speed = 8
+        self.bob_amount = 3
+        self.bob_timer = 0
+
+    def update(self, dt, player_x, player_y):
+        if not self.alive:
+            return
+        
+        # Update target to follow player
+        self.target_x = player_x
+        self.target_y = player_y
+        
+        # Calculate direction to player
+        dx = self.target_x - self.x
+        dy = self.target_y - self.y
+        length = math.sqrt(dx * dx + dy * dy)
+        
+        # Only update direction if not too close to avoid jittering
+        if length > 5:
+            self.dx = (dx / length) * BAT_SPEED
+            self.dy = (dy / length) * BAT_SPEED
+        
+        # Move towards player
+        self.x += self.dx * dt
+        self.y += self.dy * dt
+        
+        # Update rect for collision detection
+        self.rect.x = int(self.x)
+        self.rect.y = int(self.y)
+
+        # Update bobbing animation
+        self.bob_offset = math.sin(pygame.time.get_ticks() * self.bob_speed / 1000) * self.bob_amount
+        self.bob_timer += dt
+
+    def draw(self, surface):
+        if not self.alive:
+            return
+        
+        # Apply bobbing offset to y position for walking animation
+        draw_y = self.y + self.bob_offset if not self.arrived else self.y
+        
+        # Draw bat wings
+        wing_width = BAT_SIZE * 0.8
+        wing_height = BAT_SIZE * 0.4
+        
+        # Wing flapping animation based on bob_timer
+        wing_extension = abs(math.sin(self.bob_timer * 10)) * BAT_SIZE * 0.3
+        
+        # Left wing
+        left_wing_x = self.x - wing_width - wing_extension
+        pygame.draw.ellipse(surface, (40, 40, 40), (left_wing_x, draw_y, wing_width, wing_height))
+        
+        # Right wing
+        right_wing_x = self.x + BAT_SIZE
+        pygame.draw.ellipse(surface, (40, 40, 40), (right_wing_x, draw_y, wing_width + wing_extension, wing_height))
+        
+        # Draw bat body (dark gray oval)
+        pygame.draw.ellipse(surface, (60, 60, 60), (self.x, draw_y, BAT_SIZE, BAT_SIZE * 0.7))
+        
+        # Draw head
+        head_size = BAT_SIZE * 0.4
+        head_x = self.x + BAT_SIZE * 0.3
+        head_y = draw_y + BAT_SIZE * 0.1
+        pygame.draw.ellipse(surface, (40, 40, 40), (head_x, head_y, head_size, head_size))
+        
+        # Draw ears (small triangles)
+        ear_size = BAT_SIZE * 0.2
+        # Left ear
+        left_ear_points = [
+            (head_x + head_size * 0.3, head_y),
+            (head_x + head_size * 0.1, head_y - ear_size),
+            (head_x + head_size * 0.5, head_y)
+        ]
+        pygame.draw.polygon(surface, (40, 40, 40), left_ear_points)
+        
+        # Right ear
+        right_ear_points = [
+            (head_x + head_size * 0.5, head_y),
+            (head_x + head_size * 0.7, head_y - ear_size),
+            (head_x + head_size * 0.7, head_y)
+        ]
+        pygame.draw.polygon(surface, (40, 40, 40), right_ear_points)
+        
+        # Draw eyes (small red dots)
+        eye_size = BAT_SIZE * 0.06
+        pygame.draw.circle(surface, (255, 0, 0), (int(head_x + head_size * 0.25), int(head_y + head_size * 0.4)), int(eye_size))
+        pygame.draw.circle(surface, (255, 0, 0), (int(head_x + head_size * 0.65), int(head_y + head_size * 0.4)), int(eye_size))
+        
+        # Draw fangs (small white triangles)
+        fang_size = BAT_SIZE * 0.1
+        # Left fang
+        left_fang_points = [
+            (head_x + head_size * 0.3, head_y + head_size * 0.7),
+            (head_x + head_size * 0.4, head_y + head_size * 0.7 + fang_size),
+            (head_x + head_size * 0.5, head_y + head_size * 0.7)
+        ]
+        pygame.draw.polygon(surface, (255, 255, 255), left_fang_points)
+        
+        # Right fang
+        right_fang_points = [
+            (head_x + head_size * 0.5, head_y + head_size * 0.7),
+            (head_x + head_size * 0.6, head_y + head_size * 0.7 + fang_size),
+            (head_x + head_size * 0.7, head_y + head_size * 0.7)
+        ]
+        pygame.draw.polygon(surface, (255, 255, 255), right_fang_points)
+
+class Dragon:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.rect = pygame.Rect(x, y, DRAGON_SIZE, DRAGON_SIZE)
+        self.alive = True
+        self.health = 25  # Dragon takes 25 hits to defeat
+        self.fireballs = []
+        self.cooldown = 0
+        self.initial_delay = 1.5  # 1.5 second delay before first attack
+        self.has_attacked = False  # Track if dragon has started attacking
+        
+    def update(self, dt, player_x, player_y):
+        if not self.alive:
+            return
+            
+        # Update existing fireballs
+        for fireball in self.fireballs[:]:
+            fireball.update(dt)
+            # Remove fireballs that have gone off screen
+            if (fireball.x < 0 or fireball.x > WINDOW_WIDTH or 
+                fireball.y < 0 or fireball.y > WINDOW_HEIGHT):
+                self.fireballs.remove(fireball)
+        
+        # Handle initial delay before first attack
+        if not self.has_attacked:
+            self.initial_delay -= dt
+            if self.initial_delay <= 0:
+                self.has_attacked = True
+                self.shoot_fireball(player_x, player_y)
+                self.cooldown = DRAGON_ATTACK_COOLDOWN
+            return
+        
+        # Update cooldown and shoot new fireballs
+        if self.cooldown > 0:
+            self.cooldown -= dt
+        else:
+            self.shoot_fireball(player_x, player_y)
+            self.cooldown = DRAGON_ATTACK_COOLDOWN
+    
+    def shoot_fireball(self, target_x, target_y):
+        # Calculate center of dragon
+        center_x = self.x + DRAGON_SIZE // 2
+        center_y = self.y + DRAGON_SIZE // 2
+        
+        # Calculate direction to player
+        dx = target_x - center_x
+        dy = target_y - center_y
+        
+        # Normalize direction
+        distance = math.sqrt(dx * dx + dy * dy)
+        if distance > 0:
+            dx = dx / distance
+            dy = dy / distance
+        
+        # Create new fireball
+        self.fireballs.append(DragonFireball(center_x, center_y, dx, dy))
+    
+    def draw(self, surface):
+        if not self.alive:
+            return
+            
+        # Create dragon surface
+        dragon_surface = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
+        
+        # Draw dragon body (red)
+        body_color = (180, 0, 0)  # Dark red
+        
+        # Draw dragon head
+        head_size = self.rect.width // 3
+        head_x = self.rect.width // 2
+        head_y = self.rect.height // 4
+        
+        # Head bobs up and down slightly with animation
+        head_bob = math.sin(pygame.time.get_ticks() * 0.01) * 5
+        head_y += head_bob
+        
+        pygame.draw.circle(dragon_surface, body_color, (head_x, head_y), head_size)
+        
+        # Draw dragon eyes (yellow)
+        eye_color = (255, 255, 0)
+        eye_size = head_size // 4
+        eye_offset = head_size // 2
+        
+        pygame.draw.circle(dragon_surface, eye_color, 
+                         (head_x - eye_offset, head_y - eye_size), eye_size)
+        pygame.draw.circle(dragon_surface, eye_color, 
+                         (head_x + eye_offset, head_y - eye_size), eye_size)
+        
+        # Draw dragon snout
+        snout_width = head_size
+        snout_height = head_size // 2
+        
+        pygame.draw.ellipse(dragon_surface, body_color, 
+                          (head_x - snout_width // 2, 
+                           head_y, 
+                           snout_width, snout_height))
+        
+        # Draw dragon nostrils
+        nostril_size = snout_height // 4
+        nostril_offset = snout_width // 4
+        
+        pygame.draw.circle(dragon_surface, (0, 0, 0), 
+                         (head_x - nostril_offset, head_y + snout_height // 2), nostril_size)
+        pygame.draw.circle(dragon_surface, (0, 0, 0), 
+                         (head_x + nostril_offset, head_y + snout_height // 2), nostril_size)
+        
+        # Draw dragon body
+        body_width = self.rect.width * 0.8
+        body_height = self.rect.height * 0.6
+        
+        pygame.draw.ellipse(dragon_surface, body_color, 
+                          (self.rect.width // 2 - body_width // 2, 
+                           self.rect.height // 3, 
+                           body_width, body_height))
+        
+        # Draw dragon wings
+        wing_width = body_width // 2
+        wing_height = body_height * 0.8
+        
+        # Wings flap with animation
+        wing_flap = math.sin(pygame.time.get_ticks() * 0.01) * 10
+        
+        # Left wing
+        left_wing_points = [
+            (self.rect.width // 2 - body_width // 4, self.rect.height // 3 + body_height // 3),
+            (self.rect.width // 2 - body_width // 2 - wing_width + wing_flap, 
+             self.rect.height // 3 - wing_height // 2),
+            (self.rect.width // 2 - body_width // 4, self.rect.height // 3 + body_height // 2)
+        ]
+        pygame.draw.polygon(dragon_surface, body_color, left_wing_points)
+        
+        # Right wing
+        right_wing_points = [
+            (self.rect.width // 2 + body_width // 4, self.rect.height // 3 + body_height // 3),
+            (self.rect.width // 2 + body_width // 2 + wing_width - wing_flap, 
+             self.rect.height // 3 - wing_height // 2),
+            (self.rect.width // 2 + body_width // 4, self.rect.height // 3 + body_height // 2)
+        ]
+        pygame.draw.polygon(dragon_surface, body_color, right_wing_points)
+        
+        # Draw dragon tail
+        tail_width = body_width // 4
+        tail_height = body_height
+        
+        tail_points = [
+            (self.rect.width // 2, self.rect.height // 3 + body_height * 0.8),
+            (self.rect.width // 2 - tail_width // 2, self.rect.height - tail_height // 3),
+            (self.rect.width // 2 + tail_width // 2, self.rect.height - tail_height // 3)
+        ]
+        pygame.draw.polygon(dragon_surface, body_color, tail_points)
+        
+        # Draw dragon legs
+        leg_width = body_width // 6
+        leg_height = body_height // 2
+        
+        # Front legs
+        pygame.draw.rect(dragon_surface, body_color, 
+                       (self.rect.width // 2 - body_width // 3, 
+                        self.rect.height // 3 + body_height * 0.7, 
+                        leg_width, leg_height))
+        
+        pygame.draw.rect(dragon_surface, body_color, 
+                       (self.rect.width // 2 + body_width // 3 - leg_width, 
+                        self.rect.height // 3 + body_height * 0.7, 
+                        leg_width, leg_height))
+        
+        # Back legs
+        pygame.draw.rect(dragon_surface, body_color, 
+                       (self.rect.width // 2 - body_width // 4, 
+                        self.rect.height // 3 + body_height * 0.8, 
+                        leg_width, leg_height))
+        
+        pygame.draw.rect(dragon_surface, body_color, 
+                       (self.rect.width // 2 + body_width // 4 - leg_width, 
+                        self.rect.height // 3 + body_height * 0.8, 
+                        leg_width, leg_height))
+        
+        # Draw health bar above dragon
+        health_bar_width = self.rect.width
+        health_bar_height = 10
+        health_bar_x = 0
+        health_bar_y = -20
+        
+        # Background (red)
+        pygame.draw.rect(dragon_surface, (255, 0, 0), 
+                       (health_bar_x, health_bar_y, health_bar_width, health_bar_height))
+        
+        # Foreground (green) - scales with health
+        health_percent = self.health / 25.0
+        pygame.draw.rect(dragon_surface, (0, 255, 0), 
+                       (health_bar_x, health_bar_y, 
+                        health_bar_width * health_percent, health_bar_height))
+        
+        # Draw to main surface
+        surface.blit(dragon_surface, (int(self.x), int(self.y)))
+        
+        # Draw fireballs
+        for fireball in self.fireballs:
+            fireball.draw(surface)
+
+class Skeleton:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.rect = pygame.Rect(x, y, SKELETON_SIZE, SKELETON_SIZE)
+        self.alive = True
+        self.speed = SKELETON_SPEED
+        self.attack_cooldown = 0
+        self.attacking = False
+        self.attack_frame = 0
+        
+        # Animation
+        self.frame = 0
+        self.animation_time = 0
+        self.facing_direction = 'down'  # Default facing direction
+        
+    def update(self, dt, player_x, player_y):
+        if not self.alive:
+            return
+            
+        # Calculate distance to player
+        dx = player_x - (self.x + SKELETON_SIZE // 2)
+        dy = player_y - (self.y + SKELETON_SIZE // 2)
+        distance = math.sqrt(dx * dx + dy * dy)
+        
+        # Update facing direction
+        if abs(dx) > abs(dy):
+            self.facing_direction = 'right' if dx > 0 else 'left'
+        else:
+            self.facing_direction = 'down' if dy > 0 else 'up'
+        
+        # Check if in attack range
+        if distance < SKELETON_ATTACK_RANGE:
+            # Start attack if not already attacking
+            if not self.attacking and self.attack_cooldown <= 0:
+                self.attacking = True
+                self.attack_frame = 0
+                self.attack_cooldown = SKELETON_ATTACK_COOLDOWN
+        else:
+            # Move towards player if not in attack range
+            if distance > 0:
+                move_x = (dx / distance) * self.speed * dt
+                move_y = (dy / distance) * self.speed * dt
+                self.x += move_x
+                self.y += move_y
+                
+                # Update rect for collision detection
+                self.rect.x = int(self.x)
+                self.rect.y = int(self.y)
+                
+                # Update animation
+                self.animation_time += dt
+                if self.animation_time >= 0.2:  # Slower animation than player
+                    self.animation_time = 0
+                    self.frame = (self.frame + 1) % 4
+        
+        # Update attack animation
+        if self.attacking:
+            self.attack_frame += dt * 5  # 5 frames per second
+            if self.attack_frame >= 3:  # 3 frames for attack animation
+                self.attacking = False
+                
+        # Update attack cooldown
+        if self.attack_cooldown > 0:
+            self.attack_cooldown -= dt
+    
+    def get_attack_rect(self):
+        # Only return attack rect if actually attacking and in the right frame
+        if not self.attacking or self.attack_frame < 0.5:
+            return None
+            
+        # Calculate sword hitbox based on facing direction
+        sword_length = SKELETON_SIZE * 0.8
+        sword_width = SKELETON_SIZE * 0.1
+        sword_extension = min(1.0, self.attack_frame) * sword_length
+        
+        if self.facing_direction == 'right':
+            return pygame.Rect(
+                self.x + SKELETON_SIZE,
+                self.y + SKELETON_SIZE * 0.3,
+                sword_extension,
+                sword_width
+            )
+        elif self.facing_direction == 'left':
+            return pygame.Rect(
+                self.x - sword_extension,
+                self.y + SKELETON_SIZE * 0.3,
+                sword_extension,
+                sword_width
+            )
+        elif self.facing_direction == 'down':
+            return pygame.Rect(
+                self.x + SKELETON_SIZE * 0.4,
+                self.y + SKELETON_SIZE,
+                sword_width,
+                sword_extension
+            )
+        else:  # up
+            return pygame.Rect(
+                self.x + SKELETON_SIZE * 0.4,
+                self.y - sword_extension,
+                sword_width,
+                sword_extension
+            )
+    
+    def draw(self, surface):
+        if not self.alive:
+            return
+            
+        # Base skeleton color (bone white)
+        skeleton_color = (230, 230, 210)
+        
+        # Draw the skeleton body
+        body_rect = pygame.Rect(
+            self.x + SKELETON_SIZE * 0.2,
+            self.y + SKELETON_SIZE * 0.2,
+            SKELETON_SIZE * 0.6,
+            SKELETON_SIZE * 0.6
+        )
+        pygame.draw.rect(surface, skeleton_color, body_rect)
+        
+        # Draw the skull
+        skull_radius = int(SKELETON_SIZE * 0.25)
+        skull_pos = (
+            int(self.x + SKELETON_SIZE * 0.5),
+            int(self.y + SKELETON_SIZE * 0.25)
+        )
+        pygame.draw.circle(surface, skeleton_color, skull_pos, skull_radius)
+        
+        # Draw eye sockets (black)
+        eye_radius = int(SKELETON_SIZE * 0.05)
+        left_eye_pos = (
+            int(skull_pos[0] - skull_radius * 0.4),
+            int(skull_pos[1])
+        )
+        right_eye_pos = (
+            int(skull_pos[0] + skull_radius * 0.4),
+            int(skull_pos[1])
+        )
+        pygame.draw.circle(surface, (0, 0, 0), left_eye_pos, eye_radius)
+        pygame.draw.circle(surface, (0, 0, 0), right_eye_pos, eye_radius)
+        
+        # Draw limbs based on animation frame
+        limb_width = int(SKELETON_SIZE * 0.1)
+        
+        # Arms
+        arm_offset = int(SKELETON_SIZE * 0.1 * math.sin(self.frame * 0.5))
+        
+        # Left arm
+        left_arm_start = (
+            int(self.x + SKELETON_SIZE * 0.2),
+            int(self.y + SKELETON_SIZE * 0.4)
+        )
+        left_arm_end = (
+            int(self.x),
+            int(self.y + SKELETON_SIZE * 0.5 + arm_offset)
+        )
+        pygame.draw.line(surface, skeleton_color, left_arm_start, left_arm_end, limb_width)
+        
+        # Right arm
+        right_arm_start = (
+            int(self.x + SKELETON_SIZE * 0.8),
+            int(self.y + SKELETON_SIZE * 0.4)
+        )
+        right_arm_end = (
+            int(self.x + SKELETON_SIZE),
+            int(self.y + SKELETON_SIZE * 0.5 - arm_offset)
+        )
+        pygame.draw.line(surface, skeleton_color, right_arm_start, right_arm_end, limb_width)
+        
+        # Legs
+        leg_offset = int(SKELETON_SIZE * 0.1 * math.sin(self.frame * 0.5 + math.pi))
+        
+        # Left leg
+        left_leg_start = (
+            int(self.x + SKELETON_SIZE * 0.35),
+            int(self.y + SKELETON_SIZE * 0.8)
+        )
+        left_leg_end = (
+            int(self.x + SKELETON_SIZE * 0.25),
+            int(self.y + SKELETON_SIZE + leg_offset)
+        )
+        pygame.draw.line(surface, skeleton_color, left_leg_start, left_leg_end, limb_width)
+        
+        # Right leg
+        right_leg_start = (
+            int(self.x + SKELETON_SIZE * 0.65),
+            int(self.y + SKELETON_SIZE * 0.8)
+        )
+        right_leg_end = (
+            int(self.x + SKELETON_SIZE * 0.75),
+            int(self.y + SKELETON_SIZE - leg_offset)
+        )
+        pygame.draw.line(surface, skeleton_color, right_leg_start, right_leg_end, limb_width)
+        
+        # Draw weapon if attacking
+        if self.attacking:
+            weapon_color = (150, 150, 150)  # Gray for sword
+            
+            if self.facing_direction == 'right':
+                weapon_start = right_arm_end
+                weapon_end = (
+                    int(weapon_start[0] + SKELETON_SIZE * 0.8 * min(1.0, self.attack_frame)),
+                    weapon_start[1]
+                )
+                pygame.draw.line(surface, weapon_color, weapon_start, weapon_end, limb_width)
+            elif self.facing_direction == 'left':
+                weapon_start = left_arm_end
+                weapon_end = (
+                    int(weapon_start[0] - SKELETON_SIZE * 0.8 * min(1.0, self.attack_frame)),
+                    weapon_start[1]
+                )
+                pygame.draw.line(surface, weapon_color, weapon_start, weapon_end, limb_width)
+            elif self.facing_direction == 'down':
+                weapon_start = (
+                    int(self.x + SKELETON_SIZE * 0.5),
+                    int(self.y + SKELETON_SIZE * 0.8)
+                )
+                weapon_end = (
+                    weapon_start[0],
+                    int(weapon_start[1] + SKELETON_SIZE * 0.8 * min(1.0, self.attack_frame))
+                )
+                pygame.draw.line(surface, weapon_color, weapon_start, weapon_end, limb_width)
+            else:  # up
+                weapon_start = (
+                    int(self.x + SKELETON_SIZE * 0.5),
+                    int(self.y + SKELETON_SIZE * 0.3)
+                )
+                weapon_end = (
+                    weapon_start[0],
+                    int(weapon_start[1] - SKELETON_SIZE * 0.8 * min(1.0, self.attack_frame))
+                )
+                pygame.draw.line(surface, weapon_color, weapon_start, weapon_end, limb_width)
+
+class Room:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.visited = False
+        self.cleared = False
+        self.bats = []
+        self.skeletons = []
+        
+        # Doors in each direction
+        self.doors = {
+            'up': True,
+            'right': True,
+            'down': True,
+            'left': True
+        }
+        
+        # Wave system
+        self.total_waves = random.randint(1, 4)  # 1-4 waves per room
+        self.current_wave = 0
+        self.show_cleared_message = False
+        self.cleared_message_timer = 0
+        
+    def spawn_bats(self):
+        # If all waves are completed, don't spawn more bats
+        if self.current_wave >= self.total_waves:
+            self.cleared = True
+            self.show_cleared_message = True
+            self.cleared_message_timer = 2.0  # Show message for 2 seconds
+            return False
+            
+        # Spawn bats for current wave
+        for _ in range(NUM_BATS):
+            self.bats.append(Bat(random.randint(100, WINDOW_WIDTH - 100), 
+                                random.randint(100, WINDOW_HEIGHT - 100)))
+        
+        # Increment wave counter
+        self.current_wave += 1
+        
+        return True
+    
+    def update(self, dt):
+        # Update cleared message timer
+        if self.show_cleared_message:
+            self.cleared_message_timer -= dt
+            if self.cleared_message_timer <= 0:
+                self.show_cleared_message = False
+                
+    def check_if_cleared(self):
+        # Check if all enemies are defeated
+        all_bats_defeated = all(not bat.alive for bat in self.bats)
+        all_skeletons_defeated = all(not skeleton.alive for skeleton in self.skeletons)
+        
+        # If all enemies are defeated and we're on the last wave
+        if all_bats_defeated and all_skeletons_defeated:
+            if self.current_wave >= self.total_waves:
+                if not self.cleared:
+                    self.cleared = True
+                    self.show_cleared_message = True
+                    self.cleared_message_timer = 2.0  # Show message for 2 seconds
+                return True
+            else:
+                # Spawn next wave if all enemies in current wave are defeated
+                if all_bats_defeated:
+                    self.spawn_bats()
+                if all_skeletons_defeated:
+                    self.spawn_skeletons()
+        
+        return False
+    
+    def spawn_skeletons(self):
+        # If room is already cleared, don't spawn more skeletons
+        if self.cleared:
+            return False
+            
+        # Calculate positions in the corners of the room
+        corner_padding = ROOM_PADDING + SKELETON_SIZE
+        corners = [
+            (corner_padding, corner_padding),
+            (WINDOW_WIDTH - corner_padding - SKELETON_SIZE, corner_padding),
+            (WINDOW_WIDTH - corner_padding - SKELETON_SIZE, WINDOW_HEIGHT - corner_padding - SKELETON_SIZE),
+            (corner_padding, WINDOW_HEIGHT - corner_padding - SKELETON_SIZE)
+        ]
+        
+        selected_corners = random.sample(corners, min(NUM_SKELETONS, len(corners)))
+        for corner in selected_corners:
+            self.skeletons.append(Skeleton(corner[0], corner[1]))
+            
+        return True
+
+class DungeonMap:
+    def __init__(self):
+        self.rooms = {}  # Dictionary of rooms keyed by (x, y) coordinates
+        self.current_coords = (0, 0)  # Start at the origin
+        self.current_room = None
+        self.show_map = False  # Toggle for map display
+        self.in_boss_room = False  # Track if we're in the boss room
+        self.dragon = None  # Reference to the dragon boss
+        self.player = None  # Will be set by Game class
+        self.score = 0  # Will be updated by Game class
+        
+        # Initialize the first room
+        self.current_room = self.get_room(0, 0)
+        self.current_room.visited = True
+    
+    def get_room(self, x, y):
+        coords = (x, y)
+        if coords not in self.rooms:
+            self.rooms[coords] = Room(x, y)
+        return self.rooms[coords]
+    
+    def move_to_room(self, direction):
+        x, y = self.current_coords
+        
+        if direction == 'up':
+            self.current_coords = (x, y - 1)
+        elif direction == 'right':
+            self.current_coords = (x + 1, y)
+        elif direction == 'down':
+            self.current_coords = (x, y + 1)
+        elif direction == 'left':
+            self.current_coords = (x - 1, y)
+            
+        # Get the room at the new coordinates
+        self.current_room = self.get_room(*self.current_coords)
+        self.current_room.visited = True
+        
+        # Check if we should spawn a dragon
+        if not self.in_boss_room and self.player and self.score >= BOSS_SCORE_THRESHOLD:
+            # Find a room that's not the current one
+            boss_coords = None
+            for coords in self.rooms:
+                if coords != self.current_coords:
+                    boss_coords = coords
+                    break
+                    
+            # If no other room exists, create one
+            if boss_coords is None:
+                boss_coords = (x + 1, y)
+                
+            # Mark the room as the boss room
+            self.in_boss_room = True
+            self.boss_room_coords = boss_coords
+            
+            # Create the dragon in the boss room
+            boss_room = self.get_room(*boss_coords)
+            self.dragon = Dragon(WINDOW_WIDTH // 2 - DRAGON_SIZE // 2, WINDOW_HEIGHT // 2 - DRAGON_SIZE // 2)
+            boss_room.cleared = False
+            
+        # Spawn enemies if room is not cleared
+        if not self.current_room.cleared:
+            if not self.current_room.bats:
+                self.spawn_bats()
+            if not self.current_room.skeletons:
+                self.spawn_skeletons()
+        
+        return self.current_room
+        
+    def check_door_collision(self):
+        if self.player is None:
+            return False
+        
+        # If in boss room with dragon alive, don't allow door transitions
+        if self.in_boss_room and self.dragon and self.dragon.alive:
+            return False
+            
+        # Only allow transitions if the room is cleared
+        if self.current_room.cleared:
+            # Check player position against doors
+            
+            # Top door
+            if (self.player.y < ROOM_PADDING and 
+                WINDOW_WIDTH // 2 - DOOR_WIDTH // 2 < self.player.center_x < WINDOW_WIDTH // 2 + DOOR_WIDTH // 2):
+                # Move player to bottom of new room
+                self.move_to_room('up')
+                self.player.x = WINDOW_WIDTH // 2 - PLAYER_SIZE // 2
+                self.player.y = WINDOW_HEIGHT - ROOM_PADDING - PLAYER_SIZE - 5
+                # Update player center coordinates
+                self.player.center_x = self.player.x + PLAYER_SIZE // 2
+                self.player.center_y = self.player.y + PLAYER_SIZE // 2
+                return True
+            
+            # Right door
+            if (self.player.x + PLAYER_SIZE > WINDOW_WIDTH - ROOM_PADDING and 
+                WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2 < self.player.center_y < WINDOW_HEIGHT // 2 + DOOR_WIDTH // 2):
+                # Move player to left of new room
+                self.move_to_room('right')
+                self.player.x = ROOM_PADDING + 5
+                self.player.y = WINDOW_HEIGHT // 2 - PLAYER_SIZE // 2
+                # Update player center coordinates
+                self.player.center_x = self.player.x + PLAYER_SIZE // 2
+                self.player.center_y = self.player.y + PLAYER_SIZE // 2
+                return True
+                
+            # Bottom door
+            if (self.player.y + PLAYER_SIZE > WINDOW_HEIGHT - ROOM_PADDING and 
+                WINDOW_WIDTH // 2 - DOOR_WIDTH // 2 < self.player.center_x < WINDOW_WIDTH // 2 + DOOR_WIDTH // 2):
+                # Move player to top of new room
+                self.move_to_room('down')
+                self.player.x = WINDOW_WIDTH // 2 - PLAYER_SIZE // 2
+                self.player.y = ROOM_PADDING + 5
+                # Update player center coordinates
+                self.player.center_x = self.player.x + PLAYER_SIZE // 2
+                self.player.center_y = self.player.y + PLAYER_SIZE // 2
+                return True
+                
+            # Left door
+            if (self.player.x < ROOM_PADDING and 
+                WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2 < self.player.center_y < WINDOW_HEIGHT // 2 + DOOR_WIDTH // 2):
+                # Move player to right of new room
+                self.move_to_room('left')
+                self.player.x = WINDOW_WIDTH - ROOM_PADDING - PLAYER_SIZE - 5
+                self.player.y = WINDOW_HEIGHT // 2 - PLAYER_SIZE // 2
+                # Update player center coordinates
+                self.player.center_x = self.player.x + PLAYER_SIZE // 2
+                self.player.center_y = self.player.y + PLAYER_SIZE // 2
+                return True
+                
+        return False
+    
+    def spawn_bats(self):
+        # Call the current room's spawn_bats method
+        return self.current_room.spawn_bats()
+    
+    def spawn_skeletons(self):
+        # Call the current room's spawn_skeletons method
+        return self.current_room.spawn_skeletons()
+        
+    def draw_map(self, surface):
+        # If map is not enabled, don't draw anything
+        if not self.show_map:
+            return
+        
+        # ULTRA SIMPLE MAP - JUST A GIANT RED RECTANGLE WITH TEXT
+        # This should be impossible to miss if it's being drawn
+        
+        # Fill the entire screen with bright red
+        pygame.draw.rect(surface, (255, 0, 0), (0, 0, WINDOW_WIDTH, WINDOW_HEIGHT))
+        
+        # Draw huge white text
+        font = pygame.font.SysFont('Arial', 72, bold=True)
+        title = font.render("MAP IS VISIBLE", True, (255, 255, 255))
+        surface.blit(title, (WINDOW_WIDTH//2 - title.get_width()//2, WINDOW_HEIGHT//2 - 50))
+        
+        # Draw instructions
+        instructions = pygame.font.SysFont('Arial', 36).render("Press M to close", True, (255, 255, 255))
+        surface.blit(instructions, (WINDOW_WIDTH//2 - instructions.get_width()//2, WINDOW_HEIGHT//2 + 50))
+
+class Button:
+    def __init__(self, x, y, width, height, text, font_size=24, color=(100, 100, 100), hover_color=(150, 150, 150)):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = pygame.font.SysFont('Arial', font_size)
+        self.color = color
+        self.hover_color = hover_color
+        self.is_hovered = False
+        
+    def draw(self, surface):
+        # Draw button background
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(surface, color, self.rect)
+        pygame.draw.rect(surface, (255, 255, 255), self.rect, 2)  # White border
+        
+        # Draw button text
+        text_surface = self.font.render(self.text, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=self.rect.center)
+        surface.blit(text_surface, text_rect)
+        
+    def update(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+        
+    def is_clicked(self, mouse_pos, mouse_clicked):
+        return self.rect.collidepoint(mouse_pos) and mouse_clicked
+
+class Game:
+    def __init__(self):
+        self.reset_game()
+        self.m_key_pressed = False
+    
+    def reset_game(self):
+        self.player = Player(WINDOW_WIDTH//2, WINDOW_HEIGHT//2)
+        self.explosion_particles = []
+        self.dungeon = DungeonMap()
+        self.dungeon.player = self.player  # Add player reference to dungeon
+        self.current_room = self.dungeon.get_room(0, 0)  # Use current_room directly
+        self.score = 0  # Initialize score
+        self.dungeon.score = self.score  # Share score with dungeon
+        self.current_room.spawn_bats()
+        self.current_room.spawn_skeletons()  # Add skeletons to the first room
+        self.dragon = self.dungeon.dragon  # Reference dragon from dungeon
+        self.game_state = GAME_STATE_TITLE_SCREEN
+        
+        # Create buttons for title screen
+        button_width = 200
+        button_height = 60
+        button_y_offset = 50
+        self.play_button = Button(WINDOW_WIDTH // 2 - button_width // 2, 
+                                WINDOW_HEIGHT // 2 + button_y_offset, 
+                                button_width, button_height, "PLAY", 
+                                font_size=30, color=(0, 100, 0), hover_color=(0, 150, 0))
+        
+        self.quit_button = Button(WINDOW_WIDTH // 2 - button_width // 2, 
+                                WINDOW_HEIGHT // 2 + button_y_offset * 3, 
+                                button_width, button_height, "QUIT", 
+                                font_size=30, color=(150, 0, 0), hover_color=(200, 0, 0))
+    
+    def spawn_bats(self):
+        self.current_room.spawn_bats()
+    
+    def create_explosion(self, x, y):
+        for _ in range(EXPLOSION_PARTICLES):
+            self.explosion_particles.append(ExplosionParticle(x, y))
+    
+    def check_door_collision(self):
+        # Update dragon reference and score in dungeon
+        self.dungeon.dragon = self.dragon
+        self.dungeon.score = self.score
+        
+        # Use dungeon's door collision logic
+        transition = self.dungeon.check_door_collision()
+        
+        # Update current room reference if we moved
+        if transition:
+            self.current_room = self.dungeon.current_room
+            # Update dragon reference
+            self.dragon = self.dungeon.dragon
+        
+        return transition
+    
+    def check_bat_collisions(self):
+        # Check for collisions between player and bats
+        if not self.player.alive:
+            return
+            
+        player_rect = pygame.Rect(
+            self.player.x + PLAYER_SIZE * 0.2,  # Smaller hitbox for player
+            self.player.y + PLAYER_SIZE * 0.3,
+            PLAYER_SIZE * 0.6,
+            PLAYER_SIZE * 0.6
+        )
+        
+        for bat in self.current_room.bats:
+            if not bat.alive:
+                continue
+                
+            # Create a slightly smaller hitbox for the bat
+            bat_rect = pygame.Rect(
+                bat.x + BAT_SIZE * 0.2,
+                bat.y + BAT_SIZE * 0.2,
+                BAT_SIZE * 0.6,
+                BAT_SIZE * 0.6
+            )
+            
+            if player_rect.colliderect(bat_rect):
+                self.player.alive = False
+                # Only transition to game over if not already in victory state
+                if self.game_state != GAME_STATE_VICTORY:
+                    self.game_state = GAME_STATE_GAME_OVER
+                # Create explosion at player position
+                self.create_explosion(self.player.center_x, self.player.center_y)
+                return True
+        
+        return False
+    
+    def check_skeleton_collisions(self):
+        # Check for collisions between player and skeletons
+        if not self.player.alive:
+            return
+            
+        player_rect = pygame.Rect(
+            self.player.x + PLAYER_SIZE * 0.2,  # Smaller hitbox for player
+            self.player.y + PLAYER_SIZE * 0.3,
+            PLAYER_SIZE * 0.6,
+            PLAYER_SIZE * 0.6
+        )
+        
+        for skeleton in self.current_room.skeletons:
+            if not skeleton.alive:
+                continue
+                
+            # Create a slightly smaller hitbox for the skeleton
+            skeleton_rect = pygame.Rect(
+                skeleton.x + SKELETON_SIZE * 0.2,
+                skeleton.y + SKELETON_SIZE * 0.2,
+                SKELETON_SIZE * 0.6,
+                SKELETON_SIZE * 0.6
+            )
+            
+            if player_rect.colliderect(skeleton_rect):
+                self.player.alive = False
+                # Only transition to game over if not already in victory state
+                if self.game_state != GAME_STATE_VICTORY:
+                    self.game_state = GAME_STATE_GAME_OVER
+                # Create explosion at player position
+                self.create_explosion(self.player.center_x, self.player.center_y)
+                return True
+        
+        return False
+    
+    def check_skeleton_attack(self):
+        if not self.player.alive:
+            return
+            
+        # Create a slightly larger hitbox for the player when checking sword attacks
+        player_hitbox = pygame.Rect(
+            self.player.x + PLAYER_SIZE * 0.1,
+            self.player.y + PLAYER_SIZE * 0.1,
+            PLAYER_SIZE * 0.8,
+            PLAYER_SIZE * 0.8
+        )
+        
+        for skeleton in self.current_room.skeletons:
+            if not skeleton.alive or not skeleton.attacking:
+                continue
+                
+            # Get the skeleton's attack rectangle
+            attack_rect = skeleton.get_attack_rect()
+            if attack_rect and player_hitbox.colliderect(attack_rect):
+                # Player is hit by a skeleton's sword
+                self.player.alive = False
+                # Only transition to game over if not already in victory state
+                if self.game_state != GAME_STATE_VICTORY:
+                    self.game_state = GAME_STATE_GAME_OVER
+                
+                # Create explosion at player position
+                self.create_explosion(self.player.center_x, self.player.center_y)
+                return
+    
+    def check_dragon_attack(self):
+        if not self.player.alive or not self.dragon or not self.dragon.alive:
+            return
+            
+        # Create a smaller hitbox for the player (more forgiving)
+        player_hitbox = pygame.Rect(
+            self.player.x + PLAYER_SIZE * 0.25,
+            self.player.y + PLAYER_SIZE * 0.25,
+            PLAYER_SIZE * 0.5,
+            PLAYER_SIZE * 0.5
+        )
+        
+        # Check collision with fireballs
+        for fireball in self.dragon.fireballs:
+            if player_hitbox.colliderect(fireball.rect):
+                # Player is hit by a fireball
+                self.player.alive = False
+                # Only transition to game over if not already in victory state
+                if self.game_state != GAME_STATE_VICTORY:
+                    self.game_state = GAME_STATE_GAME_OVER
+                
+                # Create explosion at player position
+                self.create_explosion(self.player.center_x, self.player.center_y)
+                return
+    
+    def update(self, dt):
+        if self.game_state == GAME_STATE_GAME_OVER:
+            # Only update explosion particles in game over state
+            self.explosion_particles = [p for p in self.explosion_particles if p.update(dt)]
+            return
+            
+        if self.game_state == GAME_STATE_TITLE_SCREEN:
+            # Only update title screen
+            mouse_pos = pygame.mouse.get_pos()
+            self.play_button.update(mouse_pos)
+            self.quit_button.update(mouse_pos)
+            
+            return
+        
+        # Update player
+        mouse_pos = pygame.mouse.get_pos()
+        self.player.update_facing_direction(mouse_pos)
+        keys = pygame.key.get_pressed()
+        dx = keys[pygame.K_d] - keys[pygame.K_a]
+        dy = keys[pygame.K_s] - keys[pygame.K_w]
+        self.player.move(dx, dy, dt)
+        self.player.update_animation(dt)
+        self.player.update_projectiles(dt)
+        
+        # Toggle map with M key
+        keys_pressed = pygame.key.get_pressed()
+        if keys_pressed[pygame.K_m]:
+            # Only toggle if key was just pressed
+            if not self.m_key_pressed:
+                self.dungeon.show_map = not self.dungeon.show_map
+                self.m_key_pressed = True
+        else:
+            self.m_key_pressed = False
+        
+        # Update current room
+        self.current_room.update(dt)
+        
+        # Check for door transitions - IMPORTANT: This must be checked AFTER player movement
+        door_transition = self.check_door_collision()
+        
+        # If we transitioned to a new room, don't process the rest of the update for this frame
+        if door_transition:
+            return
+        
+        # Update bats to follow player
+        for bat in self.current_room.bats:
+            bat.update(dt, self.player.center_x, self.player.center_y)
+        
+        # Update skeletons to follow player
+        for skeleton in self.current_room.skeletons:
+            skeleton.update(dt, self.player.center_x, self.player.center_y)
+        
+        # Update dragon if it exists
+        if self.dragon is not None:
+            self.dragon.update(dt, self.player.center_x, self.player.center_y)
+        
+        # Check for bat collisions with player
+        self.check_bat_collisions()
+        
+        # Check for skeleton collisions with player
+        self.check_skeleton_collisions()
+        
+        # Check for skeleton attacks
+        self.check_skeleton_attack()
+        
+        # Check for dragon attacks
+        self.check_dragon_attack()
+        
+        # Check projectile collisions with bats
+        for bat in self.current_room.bats:
+            if not bat.alive:
+                continue
+            for projectile in self.player.projectiles:
+                if bat.rect.colliderect(projectile.rect):
+                    bat.alive = False
+                    self.score += 10
+                    self.create_explosion(bat.rect.centerx, bat.rect.centery)
+                    self.player.projectiles.remove(projectile)
+                    break
+        
+        # Check projectile collisions with skeletons
+        for skeleton in self.current_room.skeletons:
+            if not skeleton.alive:
+                continue
+            for projectile in self.player.projectiles:
+                if skeleton.rect.colliderect(projectile.rect):
+                    skeleton.alive = False
+                    self.score += 10
+                    self.create_explosion(skeleton.rect.centerx, skeleton.rect.centery)
+                    self.player.projectiles.remove(projectile)
+                    break
+        
+        # Check projectile collisions with dragon
+        if self.dragon is not None and self.dragon.alive:
+            for projectile in self.player.projectiles:
+                if self.dragon.rect.colliderect(projectile.rect):
+                    self.dragon.health -= 1
+                    self.score += 50  # More points for hitting the dragon
+                    self.create_explosion(projectile.rect.centerx, projectile.rect.centery)
+                    self.player.projectiles.remove(projectile)
+                    if self.dragon.health <= 0:
+                        self.dragon.alive = False
+                        # Create a big explosion when dragon dies
+                        for _ in range(20):  # More particles for a bigger explosion
+                            self.create_explosion(
+                                self.dragon.x + random.randint(0, DRAGON_SIZE),
+                                self.dragon.y + random.randint(0, DRAGON_SIZE)
+                            )
+                        self.score += 500  # Bonus for defeating the dragon
+                        self.current_room.cleared = True  # Mark room as cleared when dragon is defeated
+                        
+                        # Transition to victory screen
+                        self.game_state = GAME_STATE_VICTORY
+                    break
+        
+        # Update explosion particles
+        self.explosion_particles = [p for p in self.explosion_particles if p.update(dt)]
+        
+        # Check if all enemies in the room are defeated
+        all_bats_defeated = all(not bat.alive for bat in self.current_room.bats)
+        all_skeletons_defeated = all(not skeleton.alive for skeleton in self.current_room.skeletons)
+        
+        # If all enemies are defeated, check if we need to spawn a new wave or mark the room as cleared
+        if all_bats_defeated and all_skeletons_defeated:
+            # If we're on the last wave, mark the room as cleared
+            if self.current_room.current_wave >= self.current_room.total_waves:
+                if not self.current_room.cleared:
+                    self.current_room.cleared = True
+                    self.current_room.show_cleared_message = True
+                    self.current_room.cleared_message_timer = 2.0
+            else:
+                # Otherwise, spawn the next wave
+                self.current_room.spawn_bats()
+        
+        # Respawn bats if all are dead but only if the room isn't cleared
+        if all(not bat.alive for bat in self.current_room.bats) and self.dragon is None:
+            # Try to spawn a new wave
+            if not self.current_room.spawn_bats():
+                # If we couldn't spawn a new wave, the room is cleared
+                # We could display a message or play a sound here
+                pass
+        
+        # Respawn skeletons if all are dead but only if the room isn't cleared
+        if all(not skeleton.alive for skeleton in self.current_room.skeletons) and self.dragon is None:
+            # Try to spawn a new wave
+            if not self.current_room.spawn_skeletons():
+                # If we couldn't spawn a new wave, the room is cleared
+                # We could display a message or play a sound here
+                pass
+    
+    def spawn_bats(self):
+        self.current_room.spawn_bats()
+    
+    def create_explosion(self, x, y):
+        for _ in range(EXPLOSION_PARTICLES):
+            self.explosion_particles.append(ExplosionParticle(x, y))
+    
+    def draw_room(self, surface):
+        # Draw walls
+        pygame.draw.rect(surface, WALL_COLOR, (0, 0, WINDOW_WIDTH, ROOM_PADDING))  # Top wall
+        pygame.draw.rect(surface, WALL_COLOR, (0, WINDOW_HEIGHT - ROOM_PADDING, WINDOW_WIDTH, ROOM_PADDING))  # Bottom wall
+        pygame.draw.rect(surface, WALL_COLOR, (0, 0, ROOM_PADDING, WINDOW_HEIGHT))  # Left wall
+        pygame.draw.rect(surface, WALL_COLOR, (WINDOW_WIDTH - ROOM_PADDING, 0, ROOM_PADDING, WINDOW_HEIGHT))  # Right wall
+        
+        # Determine door color - red for locked (not cleared), black for unlocked (cleared)
+        door_color = (0, 0, 0) if self.current_room.cleared else (255, 0, 0)
+        
+        # Top door
+        if self.current_room.doors['up']:
+            pygame.draw.rect(surface, door_color, 
+                           (WINDOW_WIDTH // 2 - DOOR_WIDTH // 2, 0, DOOR_WIDTH, ROOM_PADDING))
+        
+        # Right door
+        if self.current_room.doors['right']:
+            pygame.draw.rect(surface, door_color, 
+                           (WINDOW_WIDTH - ROOM_PADDING, WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2, 
+                            ROOM_PADDING, DOOR_WIDTH))
+        
+        # Bottom door
+        if self.current_room.doors['down']:
+            pygame.draw.rect(surface, door_color, 
+                           (WINDOW_WIDTH // 2 - DOOR_WIDTH // 2, WINDOW_HEIGHT - ROOM_PADDING, 
+                            DOOR_WIDTH, ROOM_PADDING))
+        
+        # Left door
+        if self.current_room.doors['left']:
+            pygame.draw.rect(surface, door_color, 
+                           (0, WINDOW_HEIGHT // 2 - DOOR_WIDTH // 2, ROOM_PADDING, DOOR_WIDTH))
+    
+    def draw_wave_info(self, surface):
+        # Draw wave information in the top-right corner
+        font = pygame.font.SysFont('Arial', 24)
+        
+        if self.current_room.cleared:
+            wave_text = "Room Cleared!"
+            text_color = (0, 200, 0)  # Green
+        else:
+            wave_text = f"Wave {self.current_room.current_wave}/{self.current_room.total_waves}"
+            text_color = (255, 255, 255)
+            
+        wave_surface = font.render(wave_text, True, text_color)
+        surface.blit(wave_surface, (WINDOW_WIDTH - wave_surface.get_width() - 20, 20))
+    
+    def draw_game_over(self, surface):
+        # Draw semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))  # Semi-transparent black
+        surface.blit(overlay, (0, 0))
+        
+        # Draw game over text
+        font_large = pygame.font.SysFont('Arial', 64)
+        font_medium = pygame.font.SysFont('Arial', 36)
+        font_small = pygame.font.SysFont('Arial', 24)
+        
+        game_over_text = font_large.render("GAME OVER", True, (255, 0, 0))
+        score_text = font_medium.render(f"Score: {self.score}", True, (255, 255, 255))
+        play_again_text = font_small.render("Press SPACE to play again", True, (255, 255, 255))
+        quit_text = font_small.render("Press ESC to quit", True, (255, 255, 255))
+        
+        surface.blit(game_over_text, 
+                   (WINDOW_WIDTH // 2 - game_over_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 2 - game_over_text.get_height() // 2 - 50))
+        surface.blit(score_text, 
+                   (WINDOW_WIDTH // 2 - score_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 2))
+        surface.blit(play_again_text, 
+                   (WINDOW_WIDTH // 2 - play_again_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 2 + 80))
+        surface.blit(quit_text, 
+                   (WINDOW_WIDTH // 2 - quit_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 2 + 120))
+    
+    def draw_victory_screen(self, surface):
+        # Draw a celebratory background
+        for i in range(100):
+            x = random.randint(0, WINDOW_WIDTH)
+            y = random.randint(0, WINDOW_HEIGHT)
+            radius = random.randint(2, 6)
+            color = random.choice([(255, 215, 0), (255, 255, 0), (255, 165, 0)])  # Gold, yellow, orange
+            pygame.draw.circle(surface, color, (x, y), radius)
+        
+        # Draw semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 100, 150))  # Semi-transparent blue
+        surface.blit(overlay, (0, 0))
+        
+        # Draw victory text
+        font_large = pygame.font.SysFont('Arial', 72, bold=True)
+        font_medium = pygame.font.SysFont('Arial', 48)
+        font_small = pygame.font.SysFont('Arial', 24)
+        
+        victory_text = font_large.render("VICTORY!", True, (255, 215, 0))  # Gold color
+        subtitle_text = font_medium.render("You defeated the dragon!", True, (255, 255, 255))
+        score_text = font_medium.render(f"Final Score: {self.score}", True, (255, 255, 255))
+        title_screen_text = font_small.render("Press T to return to title screen", True, (255, 255, 255))
+        quit_text = font_small.render("Press ESC to quit", True, (255, 255, 255))
+        
+        # Add a glow effect to the victory text
+        glow_surface = pygame.Surface((victory_text.get_width() + 20, victory_text.get_height() + 20), pygame.SRCALPHA)
+        for offset in range(10, 0, -2):
+            alpha = 100 - offset * 10
+            if alpha < 0:
+                alpha = 0
+            color = (255, 215, 0, alpha)  # Gold with alpha
+            pygame.draw.rect(glow_surface, color, 
+                           (offset, offset, 
+                            victory_text.get_width() + 20 - offset * 2, 
+                            victory_text.get_height() + 20 - offset * 2), 
+                           border_radius=10)
+        
+        # Blit all text elements
+        surface.blit(glow_surface, 
+                   (WINDOW_WIDTH // 2 - (victory_text.get_width() + 20) // 2, 
+                    WINDOW_HEIGHT // 4 - (victory_text.get_height() + 20) // 2))
+        surface.blit(victory_text, 
+                   (WINDOW_WIDTH // 2 - victory_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 4 - victory_text.get_height() // 2))
+        surface.blit(subtitle_text, 
+                   (WINDOW_WIDTH // 2 - subtitle_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 4 + victory_text.get_height()))
+        surface.blit(score_text, 
+                   (WINDOW_WIDTH // 2 - score_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 2))
+        surface.blit(title_screen_text, 
+                   (WINDOW_WIDTH // 2 - title_screen_text.get_width() // 2, 
+                    WINDOW_HEIGHT * 3 // 4))
+        surface.blit(quit_text, 
+                   (WINDOW_WIDTH // 2 - quit_text.get_width() // 2, 
+                    WINDOW_HEIGHT * 3 // 4 + 40))
+        
+        # Victory screen already has all the necessary elements
+    
+    def draw_score(self, surface):
+        # Draw score in top-left corner
+        font = pygame.font.SysFont('Arial', 24)
+        score_text = font.render(f"Score: {self.score}", True, (255, 255, 255))
+        surface.blit(score_text, (20, 20))
+    
+    def draw_title_screen(self, surface):
+        # Fill the background with a dark blue color
+        surface.fill((20, 30, 50))
+        
+        # Draw a magical background effect
+        for i in range(100):
+            x = random.randint(0, WINDOW_WIDTH)
+            y = random.randint(0, WINDOW_HEIGHT)
+            radius = random.randint(1, 3)
+            alpha = random.randint(50, 200)
+            color = (100, 100, 255, alpha)
+            
+            # Create a small surface for the star with alpha
+            star_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(star_surface, color, (radius, radius), radius)
+            surface.blit(star_surface, (x, y))
+        
+        # Draw title
+        font_title = pygame.font.SysFont('Arial', 72, bold=True)
+        title_text = font_title.render("WIZARD QUEST", True, (255, 215, 0))  # Gold color
+        
+        # Create a glow effect for the title
+        glow_surface = pygame.Surface((title_text.get_width() + 20, title_text.get_height() + 20), pygame.SRCALPHA)
+        for offset in range(10, 0, -2):
+            alpha = 50 - offset * 5
+            if alpha < 0:
+                alpha = 0
+            color = (255, 215, 0, alpha)
+            pygame.draw.rect(glow_surface, color, 
+                           (offset, offset, 
+                            title_text.get_width() + 20 - offset * 2, 
+                            title_text.get_height() + 20 - offset * 2), 
+                           border_radius=10)
+        
+        # Blit the glow and title
+        surface.blit(glow_surface, 
+                   (WINDOW_WIDTH // 2 - (title_text.get_width() + 20) // 2, 
+                    WINDOW_HEIGHT // 4 - (title_text.get_height() + 20) // 2))
+        surface.blit(title_text, 
+                   (WINDOW_WIDTH // 2 - title_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 4 - title_text.get_height() // 2))
+        
+        # Draw subtitle
+        font_subtitle = pygame.font.SysFont('Arial', 24)
+        subtitle_text = font_subtitle.render("One Man. One Wand.", True, (200, 200, 200))
+        surface.blit(subtitle_text, 
+                   (WINDOW_WIDTH // 2 - subtitle_text.get_width() // 2, 
+                    WINDOW_HEIGHT // 4 + title_text.get_height()))
+        
+        # Draw buttons
+        self.play_button.draw(surface)
+        self.quit_button.draw(surface)
+        
+        # Draw instruction
+        font_instruction = pygame.font.SysFont('Arial', 18)
+        instruction_text = font_instruction.render("Click PLAY to start your adventure", True, (150, 150, 150))
+        surface.blit(instruction_text, 
+                   (WINDOW_WIDTH // 2 - instruction_text.get_width() // 2, 
+                    WINDOW_HEIGHT - 50))
+        
+    def draw(self, surface):
+        surface.fill((255, 255, 255))
+        
+        if self.game_state == GAME_STATE_TITLE_SCREEN:
+            self.draw_title_screen(surface)
+            return
+        
+        # Draw room walls and doors
+        self.draw_room(surface)
+        
+        # Draw bats
+        for bat in self.current_room.bats:
+            bat.draw(surface)
+            
+        # Draw skeletons
+        for skeleton in self.current_room.skeletons:
+            skeleton.draw(surface)
+            
+        # Draw dragon if it exists
+        if self.dragon is not None:
+            self.dragon.draw(surface)
+        
+        # Draw projectiles
+        self.player.draw_projectiles(surface)
+        
+        # Draw player if alive
+        if self.player.alive:
+            self.player.draw(surface)
+        
+        # Draw explosion particles
+        for particle in self.explosion_particles:
+            particle.draw(surface)
+            
+        # Draw map if enabled
+        if self.dungeon.show_map:
+            self.dungeon.draw_map(surface)
+        
+        # Draw score
+        self.draw_score(surface)
+        
+        # Draw wave information
+        self.draw_wave_info(surface)
+        
+        # Draw "Room Cleared!" message
+        if self.current_room.show_cleared_message:
+            cleared_font = pygame.font.SysFont('Arial', 36)
+            cleared_text = cleared_font.render("Room Cleared!", True, (0, 255, 0))
+            surface.blit(cleared_text, 
+                       (WINDOW_WIDTH // 2 - cleared_text.get_width() // 2, 
+                        WINDOW_HEIGHT // 2 - cleared_text.get_height() // 2))
+        
+        # Draw game over screen
+        if self.game_state == GAME_STATE_GAME_OVER:
+            self.draw_game_over(surface)
+            
+        # Draw victory screen
+        if self.game_state == GAME_STATE_VICTORY:
+            self.draw_victory_screen(surface)
+
+# Initialize game
+game = Game()
+
+def handle_events(game):
+    global screen, FULLSCREEN
+    
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # Left mouse button
+                # Get mouse position
+                mouse_pos = pygame.mouse.get_pos()
+                
+                # Handle title screen button clicks
+                if game.game_state == GAME_STATE_TITLE_SCREEN:
+                    if game.play_button.is_clicked(mouse_pos, True):
+                        game.game_state = GAME_STATE_PLAYING
+                    elif game.quit_button.is_clicked(mouse_pos, True):
+                        return False
+                
+                # Handle gameplay clicks
+                elif game.game_state == GAME_STATE_PLAYING:
+                    # Convert mouse position to game coordinates if in fullscreen
+                    if FULLSCREEN:
+                        # Get actual screen size
+                        screen_w, screen_h = screen.get_size()
+                        
+                        # Calculate scaling to maintain aspect ratio
+                        scale_w = screen_w / WINDOW_WIDTH
+                        scale_h = screen_h / WINDOW_HEIGHT
+                        scale = min(scale_w, scale_h)
+                        
+                        # Calculate new dimensions
+                        new_w = int(WINDOW_WIDTH * scale)
+                        new_h = int(WINDOW_HEIGHT * scale)
+                        
+                        # Calculate position to center the game
+                        pos_x = (screen_w - new_w) // 2
+                        pos_y = (screen_h - new_h) // 2
+                        
+                        # Check if mouse is within game area
+                        if (mouse_pos[0] < pos_x or mouse_pos[0] >= pos_x + new_w or 
+                            mouse_pos[1] < pos_y or mouse_pos[1] >= pos_y + new_h):
+                            # Mouse is outside the game area
+                            return True
+                        
+                        # Convert mouse coordinates to game coordinates
+                        game_x = ((mouse_pos[0] - pos_x) / new_w) * WINDOW_WIDTH
+                        game_y = ((mouse_pos[1] - pos_y) / new_h) * WINDOW_HEIGHT
+                        
+                        game.player.shoot(game_x, game_y)
+                    else:
+                        # In windowed mode, just use the mouse position directly
+                        game.player.shoot(mouse_pos[0], mouse_pos[1])
+                    
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F11:
+                # Toggle fullscreen
+                FULLSCREEN = not FULLSCREEN
+                if FULLSCREEN:
+                    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                else:
+                    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+            elif event.key == pygame.K_m and game.game_state == GAME_STATE_PLAYING:
+                # Toggle map display
+                game.dungeon.show_map = not game.dungeon.show_map
+                print(f"Map toggled: {'ON' if game.dungeon.show_map else 'OFF'}")
+                
+                # Debug information
+                print(f"DungeonMap object: {game.dungeon}")
+                print(f"Show map attribute: {game.dungeon.show_map}")
+                print(f"Number of rooms: {len(game.dungeon.rooms)}")
+                print(f"Current coords: {game.dungeon.current_coords}")
+            elif event.key == pygame.K_SPACE and game.game_state == GAME_STATE_GAME_OVER:
+                # Restart game
+                game.reset_game()
+            elif event.key == pygame.K_t and game.game_state == GAME_STATE_VICTORY:
+                # Return to title screen
+                game.reset_game()
+                game.game_state = GAME_STATE_TITLE_SCREEN
+            elif event.key == pygame.K_ESCAPE:
+                if game.game_state == GAME_STATE_GAME_OVER:
+                    return False
+                elif game.game_state == GAME_STATE_TITLE_SCREEN:
+                    return False
+                elif game.game_state == GAME_STATE_VICTORY:
+                    return False
+                else:
+                    game.game_state = GAME_STATE_PAUSED
+    
+    return True
+
+def main():
+    # Create game object
+    game = Game()
+    
+    # Create a game surface for rendering at fixed resolution
+    game_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+    
+    # Main game loop
+    running = True
+    prev_time = time.time()
+    
+    while running:
+        dt = time.time() - prev_time
+        prev_time = time.time()
+        
+        # Cap delta time to prevent physics issues when dragging window
+        if dt > 0.05:
+            dt = 0.05
+        
+        # Process events
+        running = handle_events(game)
+        
+        # Update game state
+        game.update(dt)
+        
+        # Draw everything to the game surface first
+        game_surface.fill((0, 0, 0))
+        game.draw(game_surface)
+        
+        # Clear the screen
+        screen.fill((0, 0, 0))
+        
+        # Handle fullscreen rendering with proper aspect ratio
+        if FULLSCREEN:
+            # Get actual screen size
+            screen_w, screen_h = screen.get_size()
+            
+            # Calculate scaling to maintain aspect ratio
+            scale_w = screen_w / WINDOW_WIDTH
+            scale_h = screen_h / WINDOW_HEIGHT
+            scale = min(scale_w, scale_h)
+            
+            # Calculate new dimensions
+            new_w = int(WINDOW_WIDTH * scale)
+            new_h = int(WINDOW_HEIGHT * scale)
+            
+            # Calculate position to center the game
+            pos_x = (screen_w - new_w) // 2
+            pos_y = (screen_h - new_h) // 2
+            
+            # Scale and blit
+            scaled_surface = pygame.transform.scale(game_surface, (new_w, new_h))
+            screen.blit(scaled_surface, (pos_x, pos_y))
+        else:
+            # In windowed mode, just blit directly
+            screen.blit(game_surface, (0, 0))
+        
+        # Update display
+        pygame.display.flip()
+        
+        # Cap the frame rate
+        clock.tick(60)
+    
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
