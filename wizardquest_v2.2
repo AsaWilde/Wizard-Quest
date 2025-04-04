@@ -642,9 +642,9 @@ class Player:
             elif keys[pygame.K_a]:  # Left movement
                 self.roll_direction = 'southwest'  # Use bottom left animation for left movement
             elif keys[pygame.K_w]:  # Up movement
-                self.roll_direction = 'up'
+                self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
             elif keys[pygame.K_s]:  # Down movement
-                self.roll_direction = 'down'
+                self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
             # Handle diagonal cases
             elif keys[pygame.K_w] and keys[pygame.K_d]:  # Up-right
                 self.roll_direction = 'northeast'
@@ -665,9 +665,9 @@ class Player:
                 else:
                     # More vertical than horizontal movement
                     if self.velocity_y > 0:
-                        self.roll_direction = 'down'  # Down
+                        self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
                     else:
-                        self.roll_direction = 'up'  # Up
+                        self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
         else:
             # Use cursor direction if not moving
             mouse_pos = pygame.mouse.get_pos()
@@ -696,9 +696,9 @@ class Player:
             else:
                 # More vertical than horizontal
                 if dy > 0:
-                    self.roll_direction = 'down'  # Down
+                    self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
                 else:
-                    self.roll_direction = 'up'  # Up
+                    self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
         
         # Start the roll
         self.is_rolling = True
