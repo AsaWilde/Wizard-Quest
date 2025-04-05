@@ -1,0 +1,1737 @@
+import pygame
+import sys
+import os
+import math
+import random
+import time
+import json
+
+# Initialize Pygame
+pygame.init()
+
+# Constants
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
+ASPECT_RATIO = WINDOW_WIDTH / WINDOW_HEIGHT  # Calculate the aspect ratio
+PLAYER_SPEED = 3
+PLAYER_SIZE = 150  # Changed to be a perfect multiple (4x) of the typical 24px sprite size
+ANIMATION_SPEED = 0.08  # Reduced from 0.2 to make animations play faster
+SPRITE_SIZE = 24  # The size of each sprite in the spritesheet
+ACCELERATION = 10.0  # How quickly to reach max speed
+DECELERATION = 15.0  # Increased from 6.0 to make stops more snappy
+PROJECTILE_SPEED = 999.0  # Updated to 75.0 for 7.5x speed
+PROJECTILE_SIZE = 8  # Size of projectile
+PROJECTILE_COLOR = (180, 100, 255)  # Purple projectile to match wizard's magic
+
+# Game states
+GAME_STATE_TITLE_SCREEN = -1
+GAME_STATE_PLAYING = 0
+GAME_STATE_PAUSED = 1
+GAME_STATE_GAME_OVER = 2
+GAME_STATE_VICTORY = 3
+
+
+# Initialize pygame
+pygame.init()
+FULLSCREEN = True  # Track fullscreen state
+
+# Get the desktop resolution
+desktop_info = pygame.display.Info()
+DESKTOP_WIDTH = desktop_info.current_w
+DESKTOP_HEIGHT = desktop_info.current_h
+
+# Initialize screen with desktop resolution if in fullscreen
+if FULLSCREEN:
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    # Use desktop resolution for game logic in fullscreen mode
+    GAME_WIDTH = desktop_info.current_w
+    GAME_HEIGHT = desktop_info.current_h
+else:
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    # Use window size for game logic in windowed mode
+    GAME_WIDTH = WINDOW_WIDTH
+    GAME_HEIGHT = WINDOW_HEIGHT
+pygame.display.set_caption("Dungeon Crawler")
+clock = pygame.time.Clock()
+
+# Game surface matches the screen size
+game_surface = pygame.Surface((GAME_WIDTH, GAME_HEIGHT))
+game_rect = game_surface.get_rect()
+
+class Projectile:
+    def __init__(self, x, y, dx, dy):
+        self.x = x
+        self.y = y
+        self.dx = dx
+        self.dy = dy
+        self.speed = PROJECTILE_SPEED  # Use the global constant
+        self.radius = 16  # Increased from 8 to 16
+        self.color = (255, 100, 0)  # Orange fire color
+        self.glow_color = (255, 200, 0)  # Yellow glow
+        self.lifetime = 60  # Frames before disappearing
+
+    def update(self, dt):
+        # Update position
+        self.x += self.dx * self.speed * dt
+        self.y += self.dy * self.speed * dt
+
+        # Check if out of bounds
+        if (self.x < 0 or self.x > GAME_WIDTH or 
+            self.y < 0 or self.y > GAME_HEIGHT):
+            return False 
+        return True
+        
+    def draw(self, surface, camera_x=0, camera_y=0):
+        # Draw fireball with glow effect
+        pygame.draw.circle(surface, self.glow_color, (int(self.x - camera_x), int(self.y - camera_y)), self.radius + 4)
+        pygame.draw.circle(surface, self.color, (int(self.x - camera_x), int(self.y - camera_y)), self.radius)
+        # Add flame core
+        pygame.draw.circle(surface, (255, 255, 100), (int(self.x - camera_x), int(self.y - camera_y)), self.radius - 6)
+
+class Boulder:
+    def __init__(self, x, y, target_x, target_y):
+        self.start_x = x
+        self.start_y = y
+        self.target_x = target_x
+        self.target_y = target_y
+        
+        # Calculate midpoint
+        self.mid_x = (x + target_x) / 2
+        self.mid_y = (y + target_y) / 2
+        
+        # Calculate distance from player to target
+        distance = math.sqrt((target_x - x)**2 + (target_y - y)**2)
+        
+        # Calculate zenith height based on distance
+        max_height = 500  # Maximum height when target is at player position
+        decay_factor = 0.001  # Reduced decay factor for slower height decrease
+        self.zenith_height = max_height * math.exp(-decay_factor * distance)
+        
+        # Calculate zenith position
+        self.zenith_y = self.mid_y - self.zenith_height
+        
+        # Movement state
+        self.state = 'ascending'  # 'ascending' or 'descending'
+        self.radius = 24
+        self.color = (139, 69, 19)
+        self.glow_color = (150, 100, 50)
+        self.time = 0
+        
+        # Gravity constants
+        self.gravity = 9.8  # Standard gravity in m/s²
+        self.time_scale = 0.1  # Scale factor to convert pixels to meters
+        self.base_speed = PROJECTILE_SPEED * 0.1  # Base speed for the boulder
+        
+        # Debug prints
+        print(f"Boulder created - Distance: {distance:.0f} pixels, Zenith height: {self.zenith_height:.1f} pixels")
+        if distance > 0:
+            print(f"Height ratio: {self.zenith_height/distance:.2f} pixels per distance unit")
+    
+    def update(self, dt):
+        self.time += dt
+        
+        # Calculate t value (0 to 1) for the current position
+        t = min(1, self.time / 1.0)  # Total time is now 1.0 second
+        
+        # Calculate speed based on position in trajectory
+        if t < 0.5:  # Ascending
+            # Calculate speed using more extreme logarithmic deceleration
+            speed_factor = 1.5 - t * 1.2  # Always positive
+            speed = self.base_speed * math.log(speed_factor)
+        else:  # Descending
+            # Calculate speed using more extreme exponential acceleration
+            speed = self.base_speed * math.exp((t - 0.5) * 6 - 1)
+        
+        # Calculate parabolic trajectory
+        # Using a quadratic bezier curve through the three points
+        # P0 = start point, P1 = zenith point, P2 = target point
+        
+        # Calculate control points for bezier curve
+        p0 = (self.start_x, self.start_y)
+        p1 = (self.mid_x, self.zenith_y)
+        p2 = (self.target_x, self.target_y)
+        
+        # Calculate bezier curve position
+        u = 1 - t
+        u2 = u * u
+        t2 = t * t
+        
+        # Calculate position using quadratic bezier formula
+        self.x = u2 * p0[0] + 2 * u * t * p1[0] + t2 * p2[0]
+        self.y = u2 * p0[1] + 2 * u * t * p1[1] + t2 * p2[1]
+        
+        # Debug print speeds
+        if self.time % 0.1 < dt:  # Print every 0.1 seconds
+            print(f"Time: {self.time:.2f}s, Speed: {speed:.1f}px/s")
+            print(f"Position: ({self.x:.1f}, {self.y:.1f})")
+        
+        # Remove boulder when it reaches target
+        if t >= 1:
+            return False
+        
+        # Check if out of bounds
+        if (self.x < 0 or self.x > GAME_WIDTH or 
+            self.y < 0 or self.y > GAME_HEIGHT):
+            return False
+        return True
+        
+    def draw(self, surface, camera_x=0, camera_y=0):
+        # Draw boulder with glow effect
+        pygame.draw.circle(surface, self.glow_color, 
+                         (int(self.x - camera_x), int(self.y - camera_y)), 
+                         self.radius + 4)
+        pygame.draw.circle(surface, self.color, 
+                         (int(self.x - camera_x), int(self.y - camera_y)), 
+                         self.radius)
+
+class Player:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.center_x = x + PLAYER_SIZE // 2
+        self.center_y = y + PLAYER_SIZE // 2
+        self.speed = PLAYER_SPEED
+        self.velocity_x = 0
+        self.velocity_y = 0
+        # Variables for roll boost decay
+        self.roll_boost_active = False
+        self.roll_boost_timer = 0
+        self.roll_boost_duration = 0.5  # Duration in seconds for the boost to decay (increased for more noticeable effect)
+        self.facing_direction = 'down'
+        self.animation_timer = 0
+        self.current_frame = 0
+        self.animations = {}
+        self.projectiles = []
+        self.boulders = []  # Initialize boulder list
+        self.alive = True
+        self.moving = False
+        self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        self.has_run_spritesheet = False  # Flag to track if run spritesheet is loaded
+        self.has_idle_spritesheet = False  # Flag to track if idle spritesheet is loaded
+        self.has_roll_spritesheet = False  # Flag to track if roll spritesheet is loaded
+        self.animation_direction = 'down'  # Initialize animation direction
+        self.using_idle = False  # Flag to track if we're using idle animations
+        self.is_rolling = False  # Flag to track if player is rolling
+        self.roll_direction = 'down'  # Direction of the roll
+        self.roll_timer = 0  # Timer for roll duration
+        self.roll_cooldown = 0  # Cooldown timer for roll
+        self.roll_cooldown_duration = 1.0  # Cooldown duration in seconds
+        self.roll_duration = 0.7  # Duration of roll animation in seconds (increased for slower movement)
+        self.roll_distance = 120  # Distance to roll in pixels (reduced for shorter roll)
+        self.roll_animations = {}  # Dictionary to store roll animations
+        self.load_sprites()
+        self.try_load_run_spritesheet()
+        self.try_load_idle_spritesheet()
+        self.try_load_roll_spritesheet()
+    
+    def lerp(self, start, end, amount):
+        return start + (end - start) * amount
+
+    def load_sprites(self):
+        try:
+            # Initialize animations dictionary
+            self.animations = {
+                'down': [],
+                'up': [],
+                'left': [],
+                'right': [],
+                'southwest': [],  # New diagonal direction
+                'southeast': [],  # New diagonal direction
+                'northwest': [],  # New diagonal direction
+                'northeast': []   # New diagonal direction
+            }
+                    
+            # For diagonal directions, use the closest cardinal direction
+            diagonal_to_cardinal = {
+                'southwest': 'down',
+                'southeast': 'down',
+                'northwest': 'up',
+                'northeast': 'up'
+            }
+            
+            # Copy the cardinal animations as placeholders for diagonals
+            for diagonal, cardinal in diagonal_to_cardinal.items():
+                self.animations[diagonal] = self.animations[cardinal].copy()
+                
+        except Exception as e:
+            print(f"Error creating sprites: {e}")
+            # Create fallback sprites if everything else fails
+            for direction in ['down', 'up', 'left', 'right', 'southwest', 'southeast', 'northwest', 'northeast']:
+                self.animations[direction] = [self.create_fallback_sprite()]
+        
+    def scale_pixel_art(self, surface, target_size):
+        """Scale a pixel art surface to the target size while preserving pixel crispness"""
+        # Get the current size of the surface
+        current_width, current_height = surface.get_size()
+        target_width, target_height = target_size
+        
+        # Special handling for 32x32 pixel frames (our idle animations)
+        if current_width == 32 and current_height == 32:
+            # For 32x32 pixel sprites, we'll use a specific integer scaling factor
+            # to maintain pixel clarity (e.g., 2x, 3x, 4x) before final resize
+            
+            # Determine the best integer scaling factor
+            scale_factor = min(target_width // current_width, target_height // current_height)
+            if scale_factor < 1:
+                scale_factor = 1
+            
+            # First scale by an integer factor
+            intermediate_size = (current_width * scale_factor, current_height * scale_factor)
+            try:
+                intermediate = pygame.transform.scale(surface, intermediate_size)
+            except Exception as e:
+                print(f"Error in integer scaling: {e}")
+                intermediate = surface  # Fallback to original if scaling fails
+            
+            # Now create a surface of the target size and center the scaled sprite
+            result = pygame.Surface(target_size, pygame.SRCALPHA)
+            x_offset = (target_width - intermediate_size[0]) // 2
+            y_offset = (target_height - intermediate_size[1]) // 2
+            result.blit(intermediate, (x_offset, y_offset))
+            return result
+        
+        # For other small sprites (not 16x16), center them without scaling
+        elif current_width < target_width // 2 or current_height < target_height // 2:
+            # Create a new surface and center the sprite without scaling
+            result = pygame.Surface(target_size, pygame.SRCALPHA)
+            x_offset = (target_width - current_width) // 2
+            y_offset = (target_height - current_height) // 2
+            result.blit(surface, (x_offset, y_offset))
+            return result
+        
+        # For normal scaling, use pygame's scale function with nearest neighbor interpolation
+        try:
+            # Use regular scale for pixel art (nearest neighbor is the default in pygame)
+            return pygame.transform.scale(surface, target_size)
+        except Exception as e:
+            print(f"Error scaling surface: {e}")
+            # Create a fallback surface if scaling fails
+            fallback = pygame.Surface(target_size, pygame.SRCALPHA)
+            fallback.fill((255, 0, 0, 128))  # Semi-transparent red as error indicator
+            return fallback
+    
+    def try_load_run_spritesheet(self):
+        # Try to load the run spritesheet for diagonal animations
+        try:
+            # Check if the run spritesheet file exists
+            if os.path.exists(os.path.join('assets', 'run_spritesheet.png')):
+                run_spritesheet = pygame.image.load(os.path.join('assets', 'run_spritesheet.png')).convert_alpha()
+                
+                # Get the dimensions of the spritesheet
+                sheet_width, sheet_height = run_spritesheet.get_size()
+                
+                # Calculate the size of each sprite (assuming a 4x4 grid)
+                sprite_width = sheet_width // 4
+                sprite_height = sheet_height // 4
+                
+                print(f"Loaded run spritesheet: {sheet_width}x{sheet_height}, sprite size: {sprite_width}x{sprite_height}")
+                
+                # Define which row corresponds to which diagonal direction
+                # Swapping animations as requested:
+                # Current top right (row 0) -> bottom right (southeast)
+                # Current bottom right (row 2) -> bottom left (southwest)
+                # Current bottom left (row 3) -> top left (northwest)
+                # Current top left (row 1) -> top right (northeast)
+                diagonal_directions = {
+                    'northeast': 1,  # Top right animation (0-90 degrees) - was row 0, now row 1
+                    'southeast': 0,  # Bottom right animation (90-180 degrees) - was row 2, now row 0
+                    'southwest': 2,  # Bottom left animation (180-270 degrees) - was row 3, now row 2
+                    'northwest': 3   # Top left animation (270-360 degrees) - was row 1, now row 3
+                }
+                
+                # Each row has 4 frames
+                for direction, row in diagonal_directions.items():
+                    # Clear existing animations for this direction
+                    self.animations[direction] = []
+                    
+                    for frame in range(4):
+                        # Extract the sprite from the spritesheet
+                        sprite_rect = pygame.Rect(
+                            frame * sprite_width,  # X position based on frame
+                            row * sprite_height,   # Y position based on row
+                            sprite_width,          # Width of a single sprite
+                            sprite_height          # Height of a single sprite
+                        )
+                        
+                        # Create a surface for the sprite
+                        sprite = pygame.Surface((sprite_width, sprite_height), pygame.SRCALPHA)
+                        sprite.blit(run_spritesheet, (0, 0), sprite_rect)
+                        
+                        # Scale it to match player size using our specialized pixel art scaling function
+                        scaled_sprite = self.scale_pixel_art(sprite, (PLAYER_SIZE, PLAYER_SIZE))
+                            
+                        self.animations[direction].append(scaled_sprite)
+                
+                self.has_run_spritesheet = True
+                print("Successfully loaded run spritesheet for diagonal animations")
+            else:
+                print("Run spritesheet not found in assets folder")
+                self.has_run_spritesheet = False
+        except Exception as e:
+            print(f"Error loading run spritesheet: {e}")
+            self.has_run_spritesheet = False
+            
+            # Ensure diagonal directions have fallback animations
+            diagonal_to_cardinal = {
+                'northeast': 'up',
+                'southeast': 'down',
+                'southwest': 'down',
+                'northwest': 'up'
+            }
+            
+            for diagonal, cardinal in diagonal_to_cardinal.items():
+                if cardinal in self.animations and len(self.animations[cardinal]) > 0:
+                    self.animations[diagonal] = self.animations[cardinal].copy()
+    
+    def try_load_idle_spritesheet(self):
+        # Try to load the idle spritesheet for standing animations
+        try:
+            # Check if the idle spritesheet file exists
+            if os.path.exists(os.path.join('assets', 'idle_spritesheet.png')):
+                # Load the spritesheet image
+                idle_spritesheet = pygame.image.load(os.path.join('assets', 'idle_spritesheet.png')).convert_alpha()
+                
+                # Get the dimensions of the spritesheet
+                sheet_width, sheet_height = idle_spritesheet.get_size()
+                print(f"Loaded idle spritesheet: {sheet_width}x{sheet_height}")
+                
+                # IMPORTANT: Each frame is exactly 32x32 pixels
+                FRAME_WIDTH = 32
+                FRAME_HEIGHT = 32
+                
+                # Create new animation dictionary for idle animations
+                self.idle_animations = {}
+                
+                frames_per_row = sheet_width // FRAME_WIDTH
+                total_frames = (sheet_width // FRAME_WIDTH) * (sheet_height // FRAME_HEIGHT)
+                
+                # As per user instructions:
+                # 1. Bottom left (southwest): first 6 frames going left to right, top to bottom
+                # 2. Bottom right (southeast): next 6 frames going left to right, top to bottom
+                # 3. Top left (northwest): next 6 frames going left to right, top to bottom
+                # 4. Top right (northeast): last 6 frames going left to right, top to bottom
+                
+                # Create sequential frame indices for each animation
+                southwest_frames = list(range(0, 6))   # Bottom left: first 6 frames
+                southeast_frames = list(range(6, 12))  # Bottom right: next 6 frames
+                northwest_frames = list(range(12, 18)) # Top left: next 6 frames
+                northeast_frames = list(range(18, 24)) # Top right: last 6 frames
+                
+                # Define the frame ranges for each direction
+                # Rotating counter-clockwise as requested:
+                # - Bottom left animation goes to bottom right
+                # - Bottom right animation goes to top right
+                # - Top right animation goes to top left
+                # - Top left animation goes to bottom left
+                direction_frames = {
+                    'southeast': southwest_frames,  # Bottom right uses bottom left frames
+                    'northeast': southeast_frames,  # Top right uses bottom right frames
+                    'northwest': northeast_frames,  # Top left uses top right frames
+                    'southwest': northwest_frames   # Bottom left uses top left frames
+                }
+                
+                # Frame assignments have been set up for each direction
+                
+                # Process each direction
+                for direction, frames in direction_frames.items():
+                    # Process animation frames for this direction
+                    self.idle_animations[direction] = []
+                    
+                    # Extract each frame for this direction
+                    for frame_index in frames:
+                        # Calculate the exact position of this frame in the spritesheet
+                        # For sequential frame indexing (left to right, top to bottom)
+                        frames_per_row = sheet_width // FRAME_WIDTH
+                        
+                        # Calculate row and column based on sequential index
+                        row = frame_index // frames_per_row
+                        col = frame_index % frames_per_row
+                        
+                        # Calculate pixel coordinates
+                        frame_x = col * FRAME_WIDTH
+                        frame_y = row * FRAME_HEIGHT
+                        
+                        # Frame position calculated
+                        
+                        # Create a new surface for this frame
+                        frame_surface = pygame.Surface((FRAME_WIDTH, FRAME_HEIGHT), pygame.SRCALPHA)
+                        
+                        # Extract the exact frame from the spritesheet
+                        frame_rect = pygame.Rect(frame_x, frame_y, FRAME_WIDTH, FRAME_HEIGHT)
+                        frame_surface.blit(idle_spritesheet, (0, 0), frame_rect)
+                        
+                        # Frame extracted from spritesheet
+                        
+                        # Scale the frame to the player size
+                        scaled_frame = self.scale_pixel_art(frame_surface, (PLAYER_SIZE, PLAYER_SIZE))
+                        
+                        # Add to the animation list
+                        self.idle_animations[direction].append(scaled_frame)
+                    
+                    # All frames for this direction have been loaded
+                
+                # All idle animations have been created
+                
+                # Map cardinal directions to the appropriate idle animations
+                cardinal_to_diagonal = {
+                    'up': 'northeast',     # Up uses top right animation
+                    'right': 'southeast',  # Right uses bottom right animation
+                    'down': 'southwest',   # Down uses bottom left animation
+                    'left': 'northwest'    # Left uses top left animation
+                }
+                
+                # Add cardinal direction mappings - make sure to create new lists to avoid reference issues
+                for cardinal, diagonal in cardinal_to_diagonal.items():
+                    if diagonal in self.idle_animations and len(self.idle_animations[diagonal]) > 0:
+                        # Create a copy of the animation frames to avoid reference issues
+                        self.idle_animations[cardinal] = self.idle_animations[diagonal].copy()
+                        # Cardinal direction mapped to diagonal
+                    else:
+                        # If the diagonal direction doesn't exist, create a fallback
+                        self.idle_animations[cardinal] = [self.create_placeholder_sprite((50, 50, 200))]
+                
+                # Make sure all directions have at least one frame
+                for direction in ['up', 'down', 'left', 'right', 'northeast', 'southeast', 'southwest', 'northwest']:
+                    if direction not in self.idle_animations or len(self.idle_animations[direction]) == 0:
+                        self.idle_animations[direction] = [self.create_placeholder_sprite((50, 50, 200))]
+                
+                # All animation mappings are complete
+                
+                self.has_idle_spritesheet = True
+                print("Successfully loaded idle spritesheet for standing animations")
+            else:
+                print("Idle spritesheet not found in assets folder")
+                self.has_idle_spritesheet = False
+        except Exception as e:
+            print(f"Error loading idle spritesheet: {e}")
+            self.has_idle_spritesheet = False
+            
+    def try_load_roll_spritesheet(self):
+        # Try to load the roll spritesheet for dodge roll animations
+        try:
+            # Check if the roll spritesheet file exists
+            if os.path.exists(os.path.join('assets', 'roll_spritesheet.png')):
+                # Load the spritesheet image
+                roll_spritesheet = pygame.image.load(os.path.join('assets', 'roll_spritesheet.png')).convert_alpha()
+                
+                # Get the dimensions of the spritesheet
+                sheet_width, sheet_height = roll_spritesheet.get_size()
+                print(f"Loaded roll spritesheet: {sheet_width}x{sheet_height}")
+                
+                # IMPORTANT: Each frame is exactly 32x32 pixels
+                FRAME_WIDTH = 32
+                FRAME_HEIGHT = 32
+                
+                # Create new animation dictionary for roll animations
+                self.roll_animations = {}
+                
+                frames_per_row = sheet_width // FRAME_WIDTH
+                total_frames = (sheet_width // FRAME_WIDTH) * (sheet_height // FRAME_HEIGHT)
+                
+                # As per user instructions:
+                # Each animation is 8 frames long
+                # Bottom right (southeast): frames 0-7
+                # Bottom left (southwest): frames 8-15
+                # Top right (northeast): frames 16-23
+                # Top left (northwest): frames 24-31
+                
+                # Create sequential frame indices for each animation
+                southeast_frames = list(range(0, 8))    # Bottom right: frames 0-7
+                southwest_frames = list(range(8, 16))   # Bottom left: frames 8-15
+                northeast_frames = list(range(16, 24))  # Top right: frames 16-23
+                northwest_frames = list(range(24, 32))  # Top left: frames 24-31
+                
+                # Define the frame ranges for each direction
+                direction_frames = {
+                    'southeast': southeast_frames,  # Bottom right
+                    'southwest': southwest_frames,  # Bottom left
+                    'northeast': northeast_frames,  # Top right
+                    'northwest': northwest_frames   # Top left
+                }
+                
+                # Process each direction
+                for direction, frames in direction_frames.items():
+                    # Initialize the animation list for this direction
+                    self.roll_animations[direction] = []
+                    
+                    # Extract each frame for this direction
+                    for frame_index in frames:
+                        # Calculate the position in the spritesheet
+                        row = frame_index // frames_per_row
+                        col = frame_index % frames_per_row
+                        
+                        # Calculate pixel coordinates
+                        frame_x = col * FRAME_WIDTH
+                        frame_y = row * FRAME_HEIGHT
+                        
+                        # Create a new surface for this frame
+                        frame_surface = pygame.Surface((FRAME_WIDTH, FRAME_HEIGHT), pygame.SRCALPHA)
+                        
+                        # Extract the frame from the spritesheet
+                        frame_rect = pygame.Rect(frame_x, frame_y, FRAME_WIDTH, FRAME_HEIGHT)
+                        frame_surface.blit(roll_spritesheet, (0, 0), frame_rect)
+                        
+                        # Scale the frame to the player size
+                        scaled_frame = self.scale_pixel_art(frame_surface, (PLAYER_SIZE, PLAYER_SIZE))
+                        
+                        # Add to the animation list
+                        self.roll_animations[direction].append(scaled_frame)
+                
+                # Map cardinal directions to the appropriate roll animations
+                cardinal_to_diagonal = {
+                    'right': 'northeast',
+                    'down': 'southeast',
+                    'left': 'southwest',
+                    'up': 'northwest'
+                }
+                
+                # Ensure diagonal animations exist first
+                for diagonal in ['northeast', 'southeast', 'southwest', 'northwest']:
+                    if diagonal not in self.roll_animations or len(self.roll_animations[diagonal]) == 0:
+                        # Find any existing animation to use
+                        for fallback_dir in self.roll_animations:
+                            if fallback_dir in self.roll_animations and len(self.roll_animations[fallback_dir]) > 0:
+                                self.roll_animations[diagonal] = self.roll_animations[fallback_dir].copy()
+                                break
+                
+                # Map cardinal directions to diagonal animations
+                for cardinal, diagonal in cardinal_to_diagonal.items():
+                    # Always ensure cardinal directions have valid animations
+                    if diagonal in self.roll_animations and len(self.roll_animations[diagonal]) > 0:
+                        # Create a deep copy of the animation frames to avoid reference issues
+                        self.roll_animations[cardinal] = []
+                        for frame in self.roll_animations[diagonal]:
+                            if frame is not None and frame.get_size() != (0, 0):
+                                # Create a proper deep copy of the surface
+                                frame_copy = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+                                frame_copy.blit(frame, (0, 0))
+                                self.roll_animations[cardinal].append(frame_copy)
+                            else:
+                                # Add a placeholder for invalid frames
+                                self.roll_animations[cardinal].append(self.create_placeholder_sprite((150, 100, 200)))
+                    else:
+                        # If the diagonal direction doesn't exist, use any existing animation
+                        for fallback_dir in self.roll_animations:
+                            if len(self.roll_animations[fallback_dir]) > 0:
+                                self.roll_animations[cardinal] = []
+                                for frame in self.roll_animations[fallback_dir]:
+                                    if frame is not None and frame.get_size() != (0, 0):
+                                        # Create a proper deep copy of the surface
+                                        frame_copy = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+                                        frame_copy.blit(frame, (0, 0))
+                                        self.roll_animations[cardinal].append(frame_copy)
+                                    else:
+                                        # Add a placeholder for invalid frames
+                                        self.roll_animations[cardinal].append(self.create_placeholder_sprite((150, 100, 200)))
+                                break
+                
+                # Make sure all directions have at least one frame by using existing animations
+                for direction in ['up', 'down', 'left', 'right', 'northeast', 'southeast', 'southwest', 'northwest']:
+                    if direction not in self.roll_animations or len(self.roll_animations[direction]) == 0:
+                        # Find any existing animation to use instead of placeholder
+                        for fallback_dir in self.roll_animations:
+                            if len(self.roll_animations[fallback_dir]) > 0:
+                                # Create a proper deep copy of the animation frames
+                                self.roll_animations[direction] = []
+                                for frame in self.roll_animations[fallback_dir]:
+                                    if frame is not None and frame.get_size() != (0, 0):
+                                        # Create a proper deep copy of the surface
+                                        frame_copy = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+                                        frame_copy.blit(frame, (0, 0))
+                                        self.roll_animations[direction].append(frame_copy)
+                                    else:
+                                        # Add a placeholder for invalid frames
+                                        self.roll_animations[direction].append(self.create_placeholder_sprite((150, 100, 200)))
+                                break
+                
+                self.has_roll_spritesheet = True
+                print("Successfully loaded roll spritesheet for dodge roll animations")
+            else:
+                print("No roll spritesheet found, dodge roll will use fallback sprites")
+        except Exception as e:
+            print(f"Error loading roll spritesheet: {e}")
+            self.has_roll_spritesheet = False
+
+    def create_placeholder_sprite(self, color):
+        # Create a colored square as a placeholder sprite
+        sprite = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
+        # Fill with the specified color at 50% opacity
+        color_with_alpha = (color[0], color[1], color[2], 128)
+        sprite.fill(color_with_alpha)
+        return sprite
+        
+    def create_fallback_sprite(self):
+        # Create a simple fallback sprite
+        sprite = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE), pygame.SRCALPHA)
+        # Fill with a semi-transparent gray
+        sprite.fill((100, 100, 100, 128))
+        return sprite
+
+    def update_facing_direction(self, mouse_pos):
+        # Calculate angle between player center and mouse
+        dx = mouse_pos[0] - self.center_x
+        dy = mouse_pos[1] - self.center_y
+        
+        # Convert to the new coordinate system where 0 is directly above the player
+        # and angles increase clockwise
+        angle = math.degrees(math.atan2(dy, dx))
+        # Convert to 0-360 range
+        if angle < 0:
+            angle += 360
+        # Rotate by 90 degrees counter-clockwise to make 0 degrees be up
+        angle = (angle - 90) % 360
+        
+        # Store the previous direction to check if we need to update animation
+        previous_direction = self.facing_direction
+        
+        # Always use cardinal directions for facing
+        if 315 <= angle or angle < 45:  # Up
+            self.facing_direction = 'up'
+        elif 45 <= angle < 135:  # Right
+            self.facing_direction = 'right'
+        elif 135 <= angle < 225:  # Down
+            self.facing_direction = 'down'
+        else:  # 225 <= angle < 315, Left
+            self.facing_direction = 'left'
+
+    def dodge_roll(self):
+        # Don't allow rolling if already rolling or on cooldown
+        if self.is_rolling or self.roll_cooldown > 0:
+            return
+        
+        # Determine roll direction based on movement or cursor
+        if self.moving and (self.velocity_x != 0 or self.velocity_y != 0):
+            # Store the exact velocity for movement
+            self.roll_dx = self.velocity_x
+            self.roll_dy = self.velocity_y
+            
+            # Normalize to get direction vector
+            length = math.sqrt(self.roll_dx * self.roll_dx + self.roll_dy * self.roll_dy)
+            if length > 0:
+                self.roll_dx /= length
+                self.roll_dy /= length
+            
+            # Simple direction determination based on keys pressed
+            keys = pygame.key.get_pressed()
+            
+            # Check for horizontal movement first (prioritize over vertical)
+            if keys[pygame.K_d]:  # Right movement
+                self.roll_direction = 'southeast'  # Use bottom right animation for right movement
+            elif keys[pygame.K_a]:  # Left movement
+                self.roll_direction = 'southwest'  # Use bottom left animation for left movement
+            elif keys[pygame.K_w]:  # Up movement
+                self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
+            elif keys[pygame.K_s]:  # Down movement
+                self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
+            # Handle diagonal cases
+            elif keys[pygame.K_w] and keys[pygame.K_d]:  # Up-right
+                self.roll_direction = 'northeast'
+            elif keys[pygame.K_w] and keys[pygame.K_a]:  # Up-left
+                self.roll_direction = 'northwest'
+            elif keys[pygame.K_s] and keys[pygame.K_d]:  # Down-right
+                self.roll_direction = 'southeast'
+            elif keys[pygame.K_s] and keys[pygame.K_a]:  # Down-left
+                self.roll_direction = 'southwest'
+            else:
+                # Fallback to direction based on velocity
+                if abs(self.velocity_x) > abs(self.velocity_y):
+                    # More horizontal than vertical movement
+                    if self.velocity_x > 0:
+                        self.roll_direction = 'southeast'  # Right
+                    else:
+                        self.roll_direction = 'southwest'  # Left
+                else:
+                    # More vertical than horizontal movement
+                    if self.velocity_y > 0:
+                        self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
+                    else:
+                        self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
+        else:
+            # Use cursor direction if not moving
+            mouse_pos = pygame.mouse.get_pos()
+            dx = mouse_pos[0] - self.center_x
+            dy = mouse_pos[1] - self.center_y
+            
+            # Store the exact direction vector for movement
+            # Normalize to get direction vector
+            length = math.sqrt(dx * dx + dy * dy)
+            if length > 0:
+                self.roll_dx = dx / length
+                self.roll_dy = dy / length
+            else:
+                # Fallback to direction-based movement if exact direction not available
+                self.roll_dx = 0
+                self.roll_dy = -1  # Default to up
+                
+            # Simple cursor-based direction determination
+            # Determine primary direction based on which is greater: x or y distance
+            if abs(dx) > abs(dy):
+                # More horizontal than vertical
+                if dx > 0:
+                    self.roll_direction = 'southeast'  # Right
+                else:
+                    self.roll_direction = 'southwest'  # Left
+            else:
+                # More vertical than horizontal
+                if dy > 0:
+                    self.roll_direction = 'southwest'  # Use diagonal for down to avoid weird square
+                else:
+                    self.roll_direction = 'northeast'  # Use diagonal for up to avoid weird square
+        
+        # Start the roll
+        self.is_rolling = True
+        self.roll_timer = 0
+        self.current_frame = 0  # Reset frame counter for roll animation
+        self.animation_timer = 0  # Reset animation timer to ensure consistent animation
+
+    def move(self, dx, dy, dt):
+        # If player is rolling, ignore movement input and let the roll animation handle movement
+        if self.is_rolling:
+            # Keep the moving flag updated based on roll status
+            self.moving = True
+            return
+        
+        # Handle roll boost decay if active
+        if self.roll_boost_active:
+            # Update boost timer
+            self.roll_boost_timer += dt
+            
+            # Check if boost has expired
+            if self.roll_boost_timer >= self.roll_boost_duration:
+                self.roll_boost_active = False  # Deactivate boost
+            else:
+                # Calculate how much of the boost is still active (from 1.0 to 0.0)
+                remaining_boost = 1.0 - (self.roll_boost_timer / self.roll_boost_duration)
+                
+                # Apply a decay curve that maintains strength longer
+                # Using a cubic root makes the decay slower in the beginning, maintaining momentum
+                remaining_boost = remaining_boost ** 0.33  # Cubic root for a more sustained effect
+                
+                # If player is providing input, blend their input with the boost
+                if dx != 0 or dy != 0:
+                    # Calculate target velocities from player input
+                    input_velocity_x = dx * self.speed
+                    input_velocity_y = dy * self.speed
+                    
+                    # Normalize diagonal movement for input
+                    if dx != 0 and dy != 0:
+                        input_velocity_x *= 0.7071  # 1/sqrt(2)
+                        input_velocity_y *= 0.7071
+                    
+                    # Blend the current boost velocity with the player's input
+                    # As boost decays, player input has more influence
+                    self.velocity_x = self.velocity_x * remaining_boost + input_velocity_x * (1 - remaining_boost)
+                    self.velocity_y = self.velocity_y * remaining_boost + input_velocity_y * (1 - remaining_boost)
+                else:
+                    # If no input, just decay the current velocity
+                    self.velocity_x *= remaining_boost
+                    self.velocity_y *= remaining_boost
+                
+                # Update position with current velocity
+                self.update_position(dt)
+                return
+            
+        # Normal movement without boost
+        # Calculate target velocities
+        target_velocity_x = dx * self.speed
+        target_velocity_y = dy * self.speed
+        
+        # Normalize diagonal movement
+        if dx != 0 and dy != 0:
+            target_velocity_x *= 0.7071  # 1/sqrt(2)
+            target_velocity_y *= 0.7071
+        
+        # Set velocity directly without deceleration
+        if dx != 0 or dy != 0:  # Moving
+            self.velocity_x = target_velocity_x
+            self.velocity_y = target_velocity_y
+        else:  # Not moving
+            self.velocity_x = 0
+            self.velocity_y = 0
+        
+        # Use the helper method to update position based on current velocity
+        self.update_position(dt)
+        
+        # Update moving state based on whether there's any input
+        # Since we removed deceleration, we can just check if velocity is non-zero
+        self.moving = self.velocity_x != 0 or self.velocity_y != 0
+        
+    def update_position(self, dt):
+        # Helper method to update position based on current velocity
+        # Used by both regular movement and roll boost
+        
+        # Update position
+        new_x = self.x + self.velocity_x
+        new_y = self.y + self.velocity_y
+        
+        # Apply the new position
+        self.x = new_x
+        self.y = new_y
+        
+        # Update rect for collision detection
+        self.rect.x = int(self.x)
+        self.rect.y = int(self.y)
+        
+        # Update center position
+        self.center_x = self.x + PLAYER_SIZE // 2
+        self.center_y = self.y + PLAYER_SIZE // 2
+
+    def update_animation(self, dt):
+        try:
+            # Update roll cooldown if active
+            if self.roll_cooldown > 0:
+                self.roll_cooldown -= dt
+                if self.roll_cooldown < 0:
+                    self.roll_cooldown = 0
+            
+            # Handle dodge roll animation and movement
+            if self.is_rolling:
+                # Update roll timer
+                self.roll_timer += dt
+                
+                # Update animation timer
+                self.animation_timer += dt
+                
+                # First check if roll duration is over before updating animation
+                if self.roll_timer >= self.roll_duration:
+                    # Only apply boost if it hasn't been activated during the roll animation
+                    if not self.roll_boost_active and hasattr(self, 'roll_dx') and hasattr(self, 'roll_dy'):
+                        # Set the player's velocity to a portion of the roll direction
+                        # This creates a significant boost at the end of the roll
+                        boost_factor = 2.5  # How much extra speed to get from roll (multiplier) - increased for more noticeable effect
+                        self.velocity_x = self.roll_dx * self.speed * boost_factor
+                        self.velocity_y = self.roll_dy * self.speed * boost_factor
+                        
+                        # Activate roll boost decay system
+                        self.roll_boost_active = True
+                        self.roll_boost_timer = 0.0
+                    
+                    self.is_rolling = False
+                    self.roll_cooldown = self.roll_cooldown_duration
+                    self.current_frame = 0  # Reset frame counter to prevent animation issues
+                    return  # Skip further animation updates
+                
+                # Calculate how many frames we should play based on roll duration
+                # Each roll animation has 8 frames, so we need to time them to fit within roll_duration
+                max_frames = 7  # 0-7 frames (8 total frames per animation)
+                frames_per_second = max_frames / self.roll_duration
+                expected_frame = min(int(self.roll_timer * frames_per_second), max_frames)
+                
+                # Only update the frame if we're behind the expected frame
+                if self.has_roll_spritesheet and self.roll_direction in self.roll_animations:
+                    if self.current_frame < expected_frame:
+                        self.current_frame = expected_frame
+                
+                # Move the player in the roll direction
+                if self.roll_timer < self.roll_duration:
+                    # Calculate progress through the roll (0.0 to 1.0)
+                    roll_progress = self.roll_timer / self.roll_duration
+                    
+                    # Check if we're in the middle of the roll to start boosting earlier
+                    if roll_progress > 0.4:  # Start boost at 40% through the roll animation
+                        # Calculate how far into the boost phase we are (0.0 to 1.0)
+                        end_phase_progress = (roll_progress - 0.4) / 0.6  # Normalize to 0-1 range
+                        
+                        # If we have roll direction vectors and haven't started boost yet
+                        if hasattr(self, 'roll_dx') and hasattr(self, 'roll_dy') and not self.roll_boost_active:
+                            # Gradually ramp up the boost
+                            boost_factor = 2.5 * end_phase_progress  # Gradually increase to full boost
+                            
+                            # Blend current roll movement with the boost direction
+                            self.velocity_x = self.roll_dx * self.speed * boost_factor
+                            self.velocity_y = self.roll_dy * self.speed * boost_factor
+                            
+                            # Mark that we're starting to boost but still rolling
+                            if end_phase_progress > 0.5:  # Only activate fully once we're halfway through end phase
+                                self.roll_boost_active = True
+                                self.roll_boost_timer = 0.0
+                    
+                    # Calculate base roll speed - still maintain the original roll mechanics
+                    # Variable speed based on roll progress with logarithmic decay
+                    # Create a strong initial burst that rapidly decreases
+                    
+                    # Initial burst is 2.0x speed, quickly decreasing in a logarithmic curve
+                    # Use a logarithmic-like function to create rapid initial decrease
+                    # 1 - (progress^0.5) gives us a curve that starts at 1 and decreases more quickly at first
+                    # Multiply by 1.5 and add 0.5 to scale it to range from 2.0 to 0.5
+                    speed_multiplier = (1.0 - (roll_progress ** 0.5)) * 1.5 + 0.5
+                    
+                    # This creates a curve that starts at 2.0x speed and ends at 0.5x speed
+                    # with a logarithmic-like decrease (faster at the beginning, slower at the end)
+                    
+                    # Calculate base roll speed
+                    base_roll_speed = self.roll_distance / self.roll_duration
+                    
+                    # Apply the speed multiplier
+                    roll_speed = base_roll_speed * speed_multiplier
+                    
+                    # Use the exact roll direction that was stored in dodge_roll method
+                    if hasattr(self, 'roll_dx') and hasattr(self, 'roll_dy'):
+                        dx, dy = self.roll_dx, self.roll_dy
+                    else:
+                        # Fallback to direction-based movement if exact direction not available
+                        if self.roll_direction == 'northeast':
+                            dx, dy = 0.7071, -0.7071  # Up-right
+                        elif self.roll_direction == 'southeast':
+                            dx, dy = 0.7071, 0.7071   # Down-right
+                        elif self.roll_direction == 'southwest':
+                            dx, dy = -0.7071, 0.7071  # Down-left
+                        elif self.roll_direction == 'northwest':
+                            dx, dy = -0.7071, -0.7071 # Up-left
+                        elif self.roll_direction == 'right':
+                            dx, dy = 1, 0
+                        elif self.roll_direction == 'down':
+                            dx, dy = 0, 1
+                        elif self.roll_direction == 'left':
+                            dx, dy = -1, 0
+                        elif self.roll_direction == 'up':
+                            dx, dy = 0, -1
+                        else:
+                            dx, dy = 0, 0
+                    
+                    # Apply movement with variable speed
+                    self.x += dx * roll_speed * dt
+                    self.y += dy * roll_speed * dt
+                    
+                    # Update rect and center position
+                    self.rect.x = int(self.x)
+                    self.rect.y = int(self.y)
+                    self.center_x = self.x + PLAYER_SIZE // 2
+                    self.center_y = self.y + PLAYER_SIZE // 2
+                
+                # Set animation direction to roll direction
+                self.animation_direction = self.roll_direction
+                self.using_idle = False
+                return  # Skip regular animation updates when rolling
+            
+            # Regular animation updates when not rolling
+            # Calculate angle between player center and mouse for animation
+            mouse_pos = pygame.mouse.get_pos()
+            dx = mouse_pos[0] - self.center_x
+            dy = mouse_pos[1] - self.center_y
+            
+            # Get the angle in degrees (0 is right, 90 is down, etc.)
+            angle = math.degrees(math.atan2(dy, dx))
+            # Convert to 0-360 range
+            if angle < 0:
+                angle += 360
+            
+            # Determine which animation to use based on the exact angle
+            # Northeast: 0-90 degrees
+            if 0 <= angle < 90:
+                animation_direction = 'northeast'
+            # Southeast: 90-180 degrees
+            elif 90 <= angle < 180:
+                animation_direction = 'southeast'
+            # Southwest: 180-270 degrees
+            elif 180 <= angle < 270:
+                animation_direction = 'southwest'
+            # Northwest: 270-360 degrees
+            else:  # 270 <= angle < 360
+                animation_direction = 'northwest'
+                
+            # Update the animation timer
+            self.animation_timer += dt
+            
+            # When moving, use the run spritesheet animations if available
+            if self.moving and self.has_run_spritesheet:
+                # Make sure the animation direction exists in our animations
+                if animation_direction in self.animations and len(self.animations[animation_direction]) > 0:
+                    if self.animation_timer >= ANIMATION_SPEED:
+                        self.animation_timer = 0
+                        # Update the current frame for running animation
+                        self.current_frame = (self.current_frame + 1) % len(self.animations[animation_direction])
+                    # Store the animation direction for drawing
+                    self.animation_direction = animation_direction
+                    # Use the run animations
+                    self.using_idle = False
+                else:
+                    # Fallback to a cardinal direction if the diagonal doesn't exist
+                    self.animation_direction = self.facing_direction
+                    self.using_idle = False
+            # When standing still, use the idle animations if available
+            elif not self.moving and self.has_idle_spritesheet:
+                # Make sure the animation direction exists in our idle animations
+                if hasattr(self, 'idle_animations') and animation_direction in self.idle_animations and len(self.idle_animations[animation_direction]) > 0:
+                    # Idle animations are slower (adjust as needed)
+                    if self.animation_timer >= ANIMATION_SPEED * 1.5:
+                        self.animation_timer = 0
+                        # Update the current frame for idle animation
+                        self.current_frame = (self.current_frame + 1) % len(self.idle_animations[animation_direction])
+                    # Store the animation direction for drawing
+                    self.animation_direction = animation_direction
+                    # Use the idle animations
+                    self.using_idle = True
+                else:
+                    # Fallback to regular animations if idle animations aren't available for this direction
+                    self.animation_direction = self.facing_direction
+                    self.using_idle = False
+            else:
+                # Fallback to placeholder squares if no appropriate spritesheet is available
+                self.current_frame = 0  # Reset to standing frame
+                self.animation_direction = self.facing_direction  # Use cardinal direction
+                self.using_idle = False
+        except Exception as e:
+            # If anything goes wrong, reset to a safe state
+            self.current_frame = 0
+            self.animation_direction = 'down'
+            self.using_idle = False
+
+    def update_projectiles(self, dt):
+        # Update all projectiles and remove ones that are off screen
+        self.projectiles = [proj for proj in self.projectiles 
+                          if proj.update(dt)]
+
+    def update_boulders(self, dt):
+        # Update boulders
+        self.boulders = [b for b in self.boulders if b.update(dt)]
+        print(f"Active boulders: {len(self.boulders)}")
+    
+    def shoot(self, target_x, target_y, is_boulder=False):
+        dx = target_x - self.center_x
+        dy = target_y - self.center_y
+        length = math.sqrt(dx * dx + dy * dy)
+        
+        if is_boulder:
+            if length > 0:
+                # Create boulder with arc trajectory
+                self.boulders.append(Boulder(self.center_x, self.center_y, target_x, target_y))
+        else:
+            if length > 0:
+                dx /= length
+                dy /= length
+            self.projectiles.append(Projectile(self.center_x, self.center_y, dx, dy))
+
+    def draw_projectiles(self, surface):
+        for projectile in self.projectiles:
+            projectile.draw(surface, 0, 0)
+            
+    def draw_boulders(self, surface, camera_x=0, camera_y=0):
+        print(f"DRAW: {len(self.boulders)} boulders")
+        for boulder in self.boulders:
+            boulder.draw(surface, camera_x, camera_y)
+            print(f"DRAWING BOULDER at ({boulder.x-camera_x},{boulder.y-camera_y})")
+            
+    def draw_at_position(self, surface, x, y):
+        """Draw the player at a specific screen position regardless of world position"""
+        try:
+            # Use animation_direction if it's set, otherwise fall back to facing_direction
+            direction = getattr(self, 'animation_direction', self.facing_direction)
+            
+            # Check if we're in a roll animation
+            if getattr(self, 'is_rolling', False) and hasattr(self, 'roll_animations'):
+                # If direction is missing, find a valid fallback
+                if direction not in self.roll_animations:
+                    # Try to find a valid direction
+                    for fallback in ['southwest', 'southeast', 'northwest', 'northeast', 'down', 'up', 'left', 'right']:
+                        if fallback in self.roll_animations:
+                            direction = fallback
+                            break
+                
+                # Make sure the direction exists in roll animations
+                if direction in self.roll_animations and len(self.roll_animations[direction]) > 0:
+                    # Make sure current_frame is valid
+                    if self.current_frame >= len(self.roll_animations[direction]):
+                        self.current_frame = 0
+                    
+                    frame_index = self.current_frame
+                    
+                    # Extra safety check to ensure we don't get a black square
+                    try:
+                        current_sprite = self.roll_animations[direction][frame_index]
+                        
+                        # Check if we're using a cardinal direction and need to map to diagonal
+                        if direction in ['up', 'down', 'left', 'right']:
+                            # Map cardinal to diagonal for better visuals
+                            cardinal_to_diagonal = {
+                                'right': 'northeast',
+                                'down': 'southeast',
+                                'left': 'southwest',
+                                'up': 'northwest'
+                            }
+                            
+                            # If the diagonal direction exists and has valid frames
+                            diagonal = cardinal_to_diagonal.get(direction)
+                            if (diagonal in self.roll_animations and 
+                                len(self.roll_animations[diagonal]) > frame_index):
+                                # Use the diagonal animation instead
+                                current_sprite = self.roll_animations[diagonal][frame_index]
+                        
+                        # Verify the sprite is valid (not empty/black)
+                        if current_sprite is None or current_sprite.get_size() == (0, 0):
+                            # Use a fallback sprite with the player's color
+                            current_sprite = self.create_placeholder_sprite((150, 100, 200))
+                    except (IndexError, AttributeError):
+                        # If any error occurs, use a colored placeholder instead of black
+                        current_sprite = self.create_placeholder_sprite((150, 100, 200))
+                else:
+                    # Fallback to regular animations
+                    if direction not in self.animations:
+                        direction = 'down'  # Default fallback
+                    
+                    frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                    current_sprite = self.animations[direction][frame_index]
+            # Check if we're using idle animations
+            elif getattr(self, 'using_idle', False) and hasattr(self, 'idle_animations'):
+                # If direction is missing, find a valid fallback
+                if direction not in self.idle_animations:
+                    # Try to find a valid direction
+                    for fallback in ['southwest', 'southeast', 'northwest', 'northeast', 'down', 'up', 'left', 'right']:
+                        if fallback in self.idle_animations:
+                            direction = fallback
+                            break
+                
+                # Make sure the direction exists in idle animations
+                if direction in self.idle_animations and len(self.idle_animations[direction]) > 0:
+                    # Make sure current_frame is valid
+                    if self.current_frame >= len(self.idle_animations[direction]):
+                        self.current_frame = 0
+                    
+                    frame_index = self.current_frame
+                    current_sprite = self.idle_animations[direction][frame_index]
+                else:
+                    # Fallback to regular animations
+                    if direction not in self.animations:
+                        direction = 'down'  # Default fallback
+                    
+                    frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                    current_sprite = self.animations[direction][frame_index]
+            else:
+                # Use the regular animation (running or placeholder)
+                # Ensure direction exists in our animations
+                if direction not in self.animations:
+                    direction = 'down'  # Default fallback
+                
+                # Make sure current_frame is valid
+                frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                current_sprite = self.animations[direction][frame_index]
+            
+            # Create a rect at the specified position
+            fixed_rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+            surface.blit(current_sprite, fixed_rect)
+        except Exception as e:
+            # If anything goes wrong, draw a simple fallback sprite
+            fallback = self.create_fallback_sprite()
+            fixed_rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+            surface.blit(fallback, fixed_rect)
+
+    def draw(self, surface, camera_x=0, camera_y=0):
+        try:
+            # Use animation_direction if it's set, otherwise fall back to facing_direction
+            direction = getattr(self, 'animation_direction', self.facing_direction)
+            
+            # Check if we're in a roll animation
+            if getattr(self, 'is_rolling', False) and hasattr(self, 'roll_animations'):
+                # If direction is missing, find a valid fallback
+                if direction not in self.roll_animations:
+                    # Try to find a valid direction
+                    for fallback in ['southwest', 'southeast', 'northwest', 'northeast', 'down', 'up', 'left', 'right']:
+                        if fallback in self.roll_animations:
+                            direction = fallback
+                            break
+                
+                # Make sure the direction exists in roll animations
+                if direction in self.roll_animations and len(self.roll_animations[direction]) > 0:
+                    # Make sure current_frame is valid
+                    if self.current_frame >= len(self.roll_animations[direction]):
+                        self.current_frame = 0
+                    
+                    frame_index = self.current_frame
+                    
+                    # Extra safety check to ensure we don't get a black square
+                    try:
+                        current_sprite = self.roll_animations[direction][frame_index]
+                        
+                        # Check if we're using a cardinal direction and need to map to diagonal
+                        if direction in ['up', 'down', 'left', 'right']:
+                            # Map cardinal to diagonal for better visuals
+                            cardinal_to_diagonal = {
+                                'right': 'northeast',
+                                'down': 'southeast',
+                                'left': 'southwest',
+                                'up': 'northwest'
+                            }
+                            
+                            # If the diagonal direction exists and has valid frames
+                            diagonal = cardinal_to_diagonal.get(direction)
+                            if (diagonal in self.roll_animations and 
+                                len(self.roll_animations[diagonal]) > frame_index):
+                                # Use the diagonal animation instead
+                                current_sprite = self.roll_animations[diagonal][frame_index]
+                        
+                        # Verify the sprite is valid (not empty/black)
+                        if current_sprite is None or current_sprite.get_size() == (0, 0):
+                            # Use a fallback sprite with the player's color
+                            current_sprite = self.create_placeholder_sprite((150, 100, 200))
+                    except (IndexError, AttributeError):
+                        # If any error occurs, use a colored placeholder instead of black
+                        current_sprite = self.create_placeholder_sprite((150, 100, 200))
+                else:
+                    # Fallback to regular animations
+                    if direction not in self.animations:
+                        direction = 'down'  # Default fallback
+                    
+                    frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                    current_sprite = self.animations[direction][frame_index]
+            # Check if we're using idle animations
+            elif getattr(self, 'using_idle', False) and hasattr(self, 'idle_animations'):
+                # If direction is missing, find a valid fallback
+                if direction not in self.idle_animations:
+                    # Try to find a valid direction
+                    for fallback in ['southwest', 'southeast', 'northwest', 'northeast', 'down', 'up', 'left', 'right']:
+                        if fallback in self.idle_animations:
+                            direction = fallback
+                            break
+                
+                # Make sure the direction exists in idle animations
+                if direction in self.idle_animations and len(self.idle_animations[direction]) > 0:
+                    # Make sure current_frame is valid
+                    if self.current_frame >= len(self.idle_animations[direction]):
+                        self.current_frame = 0
+                    
+                    frame_index = self.current_frame
+                    current_sprite = self.idle_animations[direction][frame_index]
+                else:
+                    # Fallback to regular animations
+                    if direction not in self.animations:
+                        direction = 'down'  # Default fallback
+                    
+                    frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                    current_sprite = self.animations[direction][frame_index]
+            else:
+                # Use the regular animation (running or placeholder)
+                # Ensure direction exists in our animations
+                if direction not in self.animations:
+                    direction = 'down'  # Default fallback
+                
+                # Make sure current_frame is valid
+                frame_index = min(self.current_frame, len(self.animations[direction]) - 1)
+                current_sprite = self.animations[direction][frame_index]
+                
+            # Draw the sprite with camera offset
+            # Create a new rect that's offset by the camera position
+            camera_rect = self.rect.copy()
+            camera_rect.x += camera_x
+            camera_rect.y += camera_y
+            surface.blit(current_sprite, camera_rect)
+        except Exception as e:
+            # If anything goes wrong, draw a simple fallback sprite
+            # If drawing fails, use a fallback sprite
+            fallback = self.create_fallback_sprite()
+            # Create a new rect that's offset by the camera position
+            camera_rect = self.rect.copy()
+            camera_rect.x += camera_x
+            camera_rect.y += camera_y
+            surface.blit(fallback, camera_rect)
+
+class Button:
+    def __init__(self, x, y, width, height, text, font_size=24, color=(100, 100, 100), hover_color=(150, 150, 150)):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = pygame.font.SysFont('Arial', font_size)
+        self.color = color
+        self.hover_color = hover_color
+        self.is_hovered = False
+        
+    def draw(self, surface, camera_x=0, camera_y=0):
+        # Draw button background
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(surface, color, self.rect)
+        pygame.draw.rect(surface, (255, 255, 255), self.rect, 2)  # White border
+        
+        # Draw button text
+        text_surface = self.font.render(self.text, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=self.rect.center)
+        surface.blit(text_surface, text_rect)
+        
+    def update(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+        
+    def is_clicked(self, mouse_pos, mouse_clicked):
+        return self.rect.collidepoint(mouse_pos) and mouse_clicked
+
+# Map class to handle loading and rendering the map
+class Map:
+    def __init__(self, map_name="default_map"):
+        # Add arena background storage
+        self.arena_background = None
+        self.map_name = map_name
+        self.tile_size = 128  # Changed to 128px tiles
+        self.width = 0
+        self.height = 0
+        self.data = []
+        self.tile_images = self.load_tile_images()
+        self.load_map()
+    
+    def load_tile_images(self):
+        # Create colored surfaces for each tile type
+        tile_images = {}
+        
+        # Define valid tile types and their colors
+        tile_colors = {
+            0: (0, 0, 0, 0),    # Empty (transparent)
+            1: (34, 139, 34),   # Grass (green)
+            2: (65, 105, 225),  # Water (blue)
+            3: (169, 169, 169), # Stone (gray)
+            4: (139, 69, 19),   # Wall (brown)
+            5: (0, 100, 0)      # Tree (dark green)
+        }
+        
+        # Create surfaces for all valid tile types
+        for tile_id, color in tile_colors.items():
+            surf = pygame.Surface((self.tile_size, self.tile_size), pygame.SRCALPHA)
+            if tile_id != 0:  # Only fill non-empty tiles
+                surf.fill(color)
+            tile_images[tile_id] = surf
+        
+        return tile_images
+    
+    def load_map(self):
+        try:
+            # Try to load the map from file
+            map_path = f"maps/{self.map_name}.json"
+            if os.path.exists(map_path):
+                with open(map_path, "r") as f:
+                    map_data = json.load(f)
+                    self.width = map_data["width"]
+                    self.height = map_data["height"]
+                    self.tile_size = map_data["tile_size"]
+                    self.data = map_data["data"]
+                    # Load arena background if present
+                    self.arena_background = map_data.get("arena_background")
+                    print(f"Map loaded: {self.map_name}")
+            else:
+                # Create an empty map if file doesn't exist
+                self.width = 15  # Updated for 128px tiles (15 * 128px = 1920px)
+                self.height = 9  # Updated for 128px tiles (9 * 128px = 1152px)
+                self.data = [[0 for _ in range(self.width)] for _ in range(self.height)]
+                print(f"Map file not found, created empty map")
+        except Exception as e:
+            print(f"Error loading map: {e}")
+            # Create an empty map as fallback
+            self.width = 15  # Updated for 128px tiles (15 * 128px = 1920px)
+            self.height = 9  # Updated for 128px tiles (9 * 128px = 1152px)
+            self.data = [[0 for _ in range(self.width)] for _ in range(self.height)]
+    
+    def draw(self, surface, camera_x, camera_y):
+        # Draw arena background if available
+        if self.arena_background and os.path.exists(self.arena_background):
+            try:
+                arena_img = pygame.image.load(self.arena_background).convert_alpha()
+                # Scale image to fill the game surface
+                scaled_arena = pygame.transform.scale(arena_img, (GAME_WIDTH, GAME_HEIGHT))
+                surface.blit(scaled_arena, (0, 0))
+            except:
+                pass
+        
+        # Then draw tiles on top
+        # Calculate visible tile range based on camera position
+        start_x = max(0, int(-camera_x // self.tile_size))
+        end_x = min(self.width, int((-camera_x + GAME_WIDTH) // self.tile_size + 1))
+        start_y = max(0, int(-camera_y // self.tile_size))
+        end_y = min(self.height, int((-camera_y + GAME_HEIGHT) // self.tile_size + 1))
+        
+        # Draw visible tiles
+        for y in range(start_y, end_y):
+            for x in range(start_x, end_x):
+                tile_type = self.data[y][x]
+                # Only draw if tile exists in tile_images (handles invalid types)
+                if tile_type in self.tile_images and tile_type != 0:
+                    tile_x = x * self.tile_size + camera_x
+                    tile_y = y * self.tile_size + camera_y
+                    surface.blit(self.tile_images[tile_type], (tile_x, tile_y))
+
+class Game:
+    def __init__(self):
+        self.player = Player(GAME_WIDTH//2, GAME_HEIGHT//2)
+        self.reset_game()
+        self.m_key_pressed = False
+        self.map = Map("default_map")
+        self.camera_x = 0
+        self.camera_y = 0
+    
+    def reset_game(self):
+        self.game_state = GAME_STATE_TITLE_SCREEN
+        
+        # Create buttons for title screen
+        button_width = 200
+        button_height = 60
+        button_y_offset = 50
+        self.play_button = Button(GAME_WIDTH // 2 - button_width // 2, 
+                                GAME_HEIGHT // 2 + button_y_offset, 
+                                button_width, button_height, "PLAY", 
+                                font_size=30, color=(0, 100, 0), hover_color=(0, 150, 0))
+        
+        self.quit_button = Button(GAME_WIDTH // 2 - button_width // 2, 
+                                GAME_HEIGHT // 2 + button_y_offset * 3, 
+                                button_width, button_height, "QUIT", 
+                                font_size=30, color=(150, 0, 0), hover_color=(200, 0, 0))
+    
+    def update(self, dt):  
+        if self.game_state == GAME_STATE_TITLE_SCREEN:
+            # Only update title screen
+            mouse_pos = pygame.mouse.get_pos()
+            self.play_button.update(mouse_pos)
+            self.quit_button.update(mouse_pos)
+            
+            return
+        
+        # Update player
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Use mouse position directly for animation direction
+        # No camera adjustment needed with static view
+        self.player.update_facing_direction(mouse_pos)
+        
+        # Remove camera system - set camera offsets to 0
+        self.camera_x = 0
+        self.camera_y = 0
+        keys = pygame.key.get_pressed()
+        dx = keys[pygame.K_d] - keys[pygame.K_a]
+        dy = keys[pygame.K_s] - keys[pygame.K_w]
+        self.player.move(dx, dy, dt)
+        self.player.update_animation(dt)
+        self.player.update_projectiles(dt)
+        self.player.update_boulders(dt)  # Make sure this is called
+    
+    def draw_game_over(self, surface):
+        # Draw semi-transparent overlay
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))  # Semi-transparent black
+        surface.blit(overlay, (0, 0))
+        
+        # Draw game over text
+        font_large = pygame.font.SysFont('Arial', 64)
+        font_medium = pygame.font.SysFont('Arial', 36)
+        font_small = pygame.font.SysFont('Arial', 24)
+    
+    def draw_title_screen(self, surface):
+        # Fill the background with a dark blue color
+        surface.fill((20, 30, 50))
+        
+        # Calculate scale factor based on resolution
+        scale_factor = min(GAME_WIDTH / 800, GAME_HEIGHT / 600)
+        
+        # Draw a magical background effect
+        for i in range(int(100 * scale_factor)):
+            x = random.randint(0, GAME_WIDTH)
+            y = random.randint(0, GAME_HEIGHT)
+            radius = random.randint(1, 3)
+            alpha = random.randint(50, 200)
+            color = (100, 100, 255, alpha)
+            
+            # Create a small surface for the star with alpha
+            star_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(star_surface, color, (radius, radius), radius)
+            surface.blit(star_surface, (x, y))
+        
+        # Scale font sizes based on resolution
+        title_size = int(72 * scale_factor)
+        subtitle_size = int(24 * scale_factor)
+        instruction_size = int(18 * scale_factor)
+        
+        # Draw title
+        font_title = pygame.font.SysFont('Arial', title_size, bold=True)
+        title_text = font_title.render("WIZARD QUEST", True, (255, 215, 0))  # Gold color
+        
+        # Create a glow effect for the title
+        glow_surface = pygame.Surface((title_text.get_width() + 20, title_text.get_height() + 20), pygame.SRCALPHA)
+        for offset in range(10, 0, -2):
+            alpha = 50 - offset * 5
+            if alpha < 0:
+                alpha = 0
+            color = (255, 215, 0, alpha)
+            pygame.draw.rect(glow_surface, color, 
+                           (offset, offset, 
+                            title_text.get_width() + 20 - offset * 2, 
+                            title_text.get_height() + 20 - offset * 2), 
+                           border_radius=10)
+        
+        # Blit the glow and title
+        surface.blit(glow_surface, 
+                   (GAME_WIDTH // 2 - (title_text.get_width() + 20) // 2, 
+                    GAME_HEIGHT // 4 - (title_text.get_height() + 20) // 2))
+        surface.blit(title_text, 
+                   (GAME_WIDTH // 2 - title_text.get_width() // 2, 
+                    GAME_HEIGHT // 4 - title_text.get_height() // 2))
+        
+        # Draw subtitle
+        font_subtitle = pygame.font.SysFont('Arial', subtitle_size)
+        subtitle_text = font_subtitle.render("One Man. One Wand.", True, (200, 200, 200))
+        surface.blit(subtitle_text, 
+                   (GAME_WIDTH // 2 - subtitle_text.get_width() // 2, 
+                    GAME_HEIGHT // 4 + title_text.get_height()))
+        
+        # Update button positions for the current resolution
+        button_width = int(200 * scale_factor)
+        button_height = int(60 * scale_factor)
+        button_y_offset = int(50 * scale_factor)
+        font_size = int(30 * scale_factor)
+        
+        # Recreate buttons with proper scaling
+        self.play_button = Button(GAME_WIDTH // 2 - button_width // 2, 
+                                GAME_HEIGHT // 2 + button_y_offset, 
+                                button_width, button_height, "PLAY", 
+                                font_size=font_size, color=(0, 100, 0), hover_color=(0, 150, 0))
+        
+        self.quit_button = Button(GAME_WIDTH // 2 - button_width // 2, 
+                                GAME_HEIGHT // 2 + button_y_offset * 3, 
+                                button_width, button_height, "QUIT", 
+                                font_size=font_size, color=(150, 0, 0), hover_color=(200, 0, 0))
+        
+        # Draw buttons
+        self.play_button.draw(surface)
+        self.quit_button.draw(surface)
+        
+        # Draw instruction
+        font_instruction = pygame.font.SysFont('Arial', instruction_size)
+        instruction_text = font_instruction.render("Click PLAY to start your adventure", True, (150, 150, 150))
+        surface.blit(instruction_text, 
+                   (GAME_WIDTH // 2 - instruction_text.get_width() // 2, 
+                    GAME_HEIGHT - int(50 * scale_factor)))
+        
+    def draw(self, surface):
+        # Fill with a dark background color
+        surface.fill((20, 20, 20))
+        
+        # Center the map with 128px tiles
+        # With 9 tiles at 128px each, the map is 1152px tall (9 * 128px)
+        # Center this in the 1080px game height
+        vertical_offset = -36  # (1080 - 1152) / 2 = -36
+        self.map.draw(surface, 0, vertical_offset)
+        
+        # Draw the player and projectiles with the same vertical offset
+        if self.game_state == GAME_STATE_PLAYING or self.game_state == GAME_STATE_PAUSED:
+            # Apply the same vertical offset to player and projectiles
+            self.player.y += vertical_offset  # Temporarily adjust player position
+            self.player.draw_projectiles(surface)
+            self.player.draw_boulders(surface, 0, vertical_offset)
+            self.player.draw(surface)
+            self.player.y -= vertical_offset  # Restore original position
+        
+        if self.game_state == GAME_STATE_TITLE_SCREEN:
+            self.draw_title_screen(surface)
+            return
+        
+        # Player and projectiles are now drawn with camera offset above
+
+# Initialize game
+game = Game()
+
+def handle_events(game):
+    global screen, FULLSCREEN
+    
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # Left mouse button
+                # Get mouse position
+                mouse_pos = pygame.mouse.get_pos()
+                
+                # Handle title screen button clicks
+                if game.game_state == GAME_STATE_TITLE_SCREEN:
+                    # Since we're using screen coordinates for game logic,
+                    # we can directly use the mouse position for UI interactions
+                    if game.play_button.is_clicked(mouse_pos, True):
+                        game.game_state = GAME_STATE_PLAYING
+                    elif game.quit_button.is_clicked(mouse_pos, True):
+                        return False
+                
+                # Handle gameplay clicks
+                elif game.game_state == GAME_STATE_PLAYING:
+                    # Convert mouse position to game coordinates if in fullscreen
+                    if FULLSCREEN:
+                        # Get actual screen size
+                        screen_w, screen_h = screen.get_size()
+                        
+                        # Use mouse position directly for shooting
+                        # No camera adjustment needed with static view
+                        game.player.shoot(mouse_pos[0], mouse_pos[1])
+                    else:
+                        # In windowed mode, also use mouse position directly
+                        game.player.shoot(mouse_pos[0], mouse_pos[1])
+            elif event.button == 3:  # Right mouse button
+                mouse_pos = pygame.mouse.get_pos()
+                print(f"RIGHT-CLICK DETECTED at {mouse_pos}")
+                pygame.draw.circle(pygame.display.get_surface(), (255,0,0), mouse_pos, 10, 1)  # Red circle
+                game.player.shoot(mouse_pos[0], mouse_pos[1], is_boulder=True)
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F11:
+                # Toggle fullscreen
+                FULLSCREEN = not FULLSCREEN
+                if FULLSCREEN:
+                    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                else:
+                    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+            # Map toggle functionality removed
+            elif event.key == pygame.K_SPACE:
+                if game.game_state == GAME_STATE_GAME_OVER:
+                    # Restart game
+                    game.reset_game()
+                elif game.game_state == GAME_STATE_PLAYING and game.player.alive:
+                    # Trigger dodge roll if not already rolling and cooldown is over
+                    if not game.player.is_rolling and game.player.roll_cooldown <= 0:
+                        game.player.dodge_roll()
+            elif event.key == pygame.K_t and game.game_state == GAME_STATE_VICTORY:
+                # Return to title screen
+                game.reset_game()
+                game.game_state = GAME_STATE_TITLE_SCREEN
+            elif event.key == pygame.K_ESCAPE:
+                if game.game_state == GAME_STATE_GAME_OVER:
+                    return False
+                elif game.game_state == GAME_STATE_TITLE_SCREEN:
+                    return False
+                elif game.game_state == GAME_STATE_VICTORY:
+                    return False
+                else:
+                    game.game_state = GAME_STATE_PAUSED
+    
+    return True
+
+def main():
+    # Create game object
+    game = Game()
+    
+    # Create a game surface that matches the screen size
+    game_surface = pygame.Surface((GAME_WIDTH, GAME_HEIGHT))
+    
+    # Main game loop
+    running = True
+    prev_time = time.time()
+    
+    while running:
+        dt = time.time() - prev_time
+        prev_time = time.time()
+        
+        # Cap delta time to prevent physics issues when dragging window
+        if dt > 0.05:
+            dt = 0.05
+        
+        # Process events
+        running = handle_events(game)
+        
+        # Update game state
+        game.update(dt)
+        
+        # Draw everything to the game surface first
+        game_surface.fill((0, 0, 0))
+        game.draw(game_surface)
+        
+        # Clear the screen
+        screen.fill((0, 0, 0))
+        
+        # In both fullscreen and windowed mode, just blit directly
+        # Since game_surface is already the right size
+        screen.blit(game_surface, (0, 0))
+        
+        # Update display
+        pygame.display.flip()
+        
+        # Cap the frame rate
+        clock.tick(60)
+    
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
