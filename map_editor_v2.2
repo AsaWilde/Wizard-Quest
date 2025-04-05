@@ -1,0 +1,351 @@
+import pygame
+import sys
+import os
+import json
+import math
+
+# Initialize Pygame
+pygame.init()
+
+# Constants
+WINDOW_WIDTH = 1024
+WINDOW_HEIGHT = 768
+# Match the desktop resolution for fullscreen mode (1920x1080)
+GAME_WIDTH = 1920
+GAME_HEIGHT = 1080
+
+# Adjust grid dimensions to work with 128px tiles
+GRID_WIDTH = 15  # Number of tiles horizontally (15 * 128px = 1920px, exactly matches screen width)
+GRID_HEIGHT = 9  # Number of tiles vertically (9 * 128px = 1152px, slightly taller than screen)
+
+# Use a smaller tile size in the editor to ensure the entire grid fits
+EDITOR_TILE_SIZE = 16  # Reduced to 16px to ensure the entire grid fits in the editor window
+
+# The actual tile size used in the game will be 128px
+TILE_SIZE = 128  # This makes each tile larger while still showing more of the map
+CAMERA_SPEED = 15  # Increased for easier navigation
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GRAY = (128, 128, 128)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+
+# Tile types
+TILE_EMPTY = 0
+TILE_GRASS = 1
+TILE_WATER = 2
+TILE_STONE = 3
+TILE_WALL = 4
+TILE_TREE = 5
+
+# Tile colors for visualization (will be replaced with images later)
+TILE_COLORS = {
+    TILE_EMPTY: (0, 0, 0, 0),  # Transparent
+    TILE_GRASS: (34, 139, 34),  # Green
+    TILE_WATER: (65, 105, 225),  # Blue
+    TILE_STONE: (169, 169, 169),  # Gray
+    TILE_WALL: (139, 69, 19),  # Brown
+    TILE_TREE: (0, 100, 0)  # Dark Green
+}
+
+# Initialize screen
+screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+pygame.display.set_caption("Wizard Quest Map Editor")
+
+# Load tile images
+def load_tile_images():
+    tile_images = {}
+    
+    # Load stone tile image
+    try:
+        stone_img = pygame.image.load("assets/stone_tile.png").convert_alpha()
+    except:
+        print("Could not load stone_tile.png, using fallback color")
+        stone_img = None
+    
+    # Create colored surfaces for each tile type
+    for tile_id, color in TILE_COLORS.items():
+        surf = pygame.Surface((EDITOR_TILE_SIZE, EDITOR_TILE_SIZE), pygame.SRCALPHA)
+        
+        if tile_id == TILE_EMPTY:
+            # Make empty tiles semi-transparent
+            pygame.draw.rect(surf, (200, 200, 200, 50), (0, 0, EDITOR_TILE_SIZE, EDITOR_TILE_SIZE), 1)
+        elif tile_id == TILE_STONE and stone_img is not None:
+            # Scale the stone tile image to fill the editor tile size
+            scaled_stone = pygame.transform.scale(stone_img, (EDITOR_TILE_SIZE, EDITOR_TILE_SIZE))
+            surf.blit(scaled_stone, (0, 0))
+            # Add a subtle grid line
+            pygame.draw.rect(surf, (0, 0, 0, 50), (0, 0, EDITOR_TILE_SIZE, EDITOR_TILE_SIZE), 1)
+        else:
+            surf.fill(color)
+            # Add a grid line
+            pygame.draw.rect(surf, (0, 0, 0, 100), (0, 0, EDITOR_TILE_SIZE, EDITOR_TILE_SIZE), 1)
+        
+        tile_images[tile_id] = surf
+    
+    return tile_images
+
+# Initialize map data
+def create_empty_map():
+    return [[TILE_EMPTY for _ in range(GRID_WIDTH)] for _ in range(GRID_HEIGHT)]
+
+class MapEditor:
+    def __init__(self):
+        self.map_data = create_empty_map()
+        self.tile_images = load_tile_images()
+        self.current_tile = TILE_GRASS
+        
+        # Position the camera to show the entire grid
+        # Calculate the total grid size in pixels using the editor tile size
+        total_grid_width = GRID_WIDTH * EDITOR_TILE_SIZE
+        total_grid_height = GRID_HEIGHT * EDITOR_TILE_SIZE
+        
+        # Set camera position to show the entire grid
+        # We want to position the grid with a small margin from the top of the palette
+        self.camera_x = (WINDOW_WIDTH - total_grid_width) // 2
+        self.camera_y = 80  # Fixed position below the palette with some margin
+        self.is_drawing = False
+        self.is_erasing = False
+        self.show_grid = True
+        self.map_name = "default_map"
+        self.font = pygame.font.SysFont('Arial', 16)
+        
+        # UI elements
+        self.palette_rect = pygame.Rect(10, 10, WINDOW_WIDTH - 20, 60)
+        self.palette_tiles = [TILE_EMPTY, TILE_GRASS, TILE_WATER, TILE_STONE, TILE_WALL, TILE_TREE]
+        
+        # Create buttons
+        self.save_button = pygame.Rect(WINDOW_WIDTH - 110, WINDOW_HEIGHT - 40, 100, 30)
+        self.load_button = pygame.Rect(WINDOW_WIDTH - 220, WINDOW_HEIGHT - 40, 100, 30)
+        self.clear_button = pygame.Rect(WINDOW_WIDTH - 330, WINDOW_HEIGHT - 40, 100, 30)
+        self.grid_button = pygame.Rect(WINDOW_WIDTH - 440, WINDOW_HEIGHT - 40, 100, 30)
+    
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                # Left mouse button
+                if event.button == 1:
+                    # Check if clicking on palette
+                    if self.palette_rect.collidepoint(event.pos):
+                        self.handle_palette_click(event.pos)
+                    # Check if clicking on buttons
+                    elif self.save_button.collidepoint(event.pos):
+                        self.save_map()
+                    elif self.load_button.collidepoint(event.pos):
+                        self.load_map()
+                    elif self.clear_button.collidepoint(event.pos):
+                        self.map_data = create_empty_map()
+                    elif self.grid_button.collidepoint(event.pos):
+                        self.show_grid = not self.show_grid
+                    else:
+                        # Start drawing with current tile
+                        self.is_drawing = True
+                        self.handle_mouse_draw(event.pos)
+                
+                # Right mouse button (erase)
+                elif event.button == 3:
+                    self.is_erasing = True
+                    self.handle_mouse_erase(event.pos)
+            
+            elif event.type == pygame.MOUSEBUTTONUP:
+                # Left mouse button released
+                if event.button == 1:
+                    self.is_drawing = False
+                # Right mouse button released
+                elif event.button == 3:
+                    self.is_erasing = False
+            
+            elif event.type == pygame.MOUSEMOTION:
+                # Continue drawing/erasing if mouse is held down
+                if self.is_drawing:
+                    self.handle_mouse_draw(event.pos)
+                elif self.is_erasing:
+                    self.handle_mouse_erase(event.pos)
+            
+            elif event.type == pygame.KEYDOWN:
+                # Camera movement
+                if event.key == pygame.K_w:
+                    self.camera_y += CAMERA_SPEED
+                elif event.key == pygame.K_s:
+                    self.camera_y -= CAMERA_SPEED
+                elif event.key == pygame.K_a:
+                    self.camera_x += CAMERA_SPEED
+                elif event.key == pygame.K_d:
+                    self.camera_x -= CAMERA_SPEED
+                # Save/load shortcuts
+                elif event.key == pygame.K_LCTRL and event.key == pygame.K_s:
+                    self.save_map()
+                elif event.key == pygame.K_LCTRL and event.key == pygame.K_o:
+                    self.load_map()
+        
+        return True
+    
+    def handle_palette_click(self, pos):
+        # Calculate which tile was clicked in the palette
+        rel_x = pos[0] - self.palette_rect.x
+        tile_index = rel_x // (TILE_SIZE + 10)
+        
+        if 0 <= tile_index < len(self.palette_tiles):
+            self.current_tile = self.palette_tiles[tile_index]
+    
+    def handle_mouse_draw(self, pos):
+        # Convert screen coordinates to grid coordinates
+        grid_x, grid_y = self.screen_to_grid(pos)
+        
+        # Check if within grid bounds
+        if 0 <= grid_x < GRID_WIDTH and 0 <= grid_y < GRID_HEIGHT:
+            self.map_data[grid_y][grid_x] = self.current_tile
+    
+    def handle_mouse_erase(self, pos):
+        # Convert screen coordinates to grid coordinates
+        grid_x, grid_y = self.screen_to_grid(pos)
+        
+        # Check if within grid bounds
+        if 0 <= grid_x < GRID_WIDTH and 0 <= grid_y < GRID_HEIGHT:
+            self.map_data[grid_y][grid_x] = TILE_EMPTY
+    
+    def screen_to_grid(self, pos):
+        # Convert screen coordinates to grid coordinates
+        grid_x = (pos[0] - self.camera_x) // EDITOR_TILE_SIZE
+        grid_y = (pos[1] - self.camera_y - self.palette_rect.height - 20) // EDITOR_TILE_SIZE
+        return int(grid_x), int(grid_y)
+    
+    def grid_to_screen(self, grid_x, grid_y):
+        # Convert grid coordinates to screen coordinates
+        screen_x = grid_x * EDITOR_TILE_SIZE + self.camera_x
+        screen_y = grid_y * EDITOR_TILE_SIZE + self.camera_y + self.palette_rect.height + 20
+        return screen_x, screen_y
+    
+    def save_map(self):
+        # Create maps directory if it doesn't exist
+        os.makedirs("maps", exist_ok=True)
+        
+        # Save map data to JSON file
+        with open(f"maps/{self.map_name}.json", "w") as f:
+            json.dump({
+                "width": GRID_WIDTH,
+                "height": GRID_HEIGHT,
+                "tile_size": TILE_SIZE,
+                "data": self.map_data
+            }, f)
+        
+        print(f"Map saved to maps/{self.map_name}.json")
+    
+    def load_map(self):
+        try:
+            # Load map data from JSON file
+            with open(f"maps/{self.map_name}.json", "r") as f:
+                map_data = json.load(f)
+                
+                # Update map data
+                self.map_data = map_data["data"]
+                
+                print(f"Map loaded from maps/{self.map_name}.json")
+        except FileNotFoundError:
+            print(f"Map file maps/{self.map_name}.json not found")
+    
+    def draw(self):
+        # Fill background
+        screen.fill((50, 50, 50))
+        
+        # Draw map grid
+        visible_start_x = max(0, -self.camera_x // EDITOR_TILE_SIZE)
+        visible_end_x = min(GRID_WIDTH, (-self.camera_x + WINDOW_WIDTH) // EDITOR_TILE_SIZE + 1)
+        visible_start_y = max(0, -(self.camera_y + self.palette_rect.height + 20) // EDITOR_TILE_SIZE)
+        visible_end_y = min(GRID_HEIGHT, (-(self.camera_y + self.palette_rect.height + 20) + WINDOW_HEIGHT) // EDITOR_TILE_SIZE + 1)
+        
+        # Draw visible tiles
+        for y in range(visible_start_y, visible_end_y):
+            for x in range(visible_start_x, visible_end_x):
+                tile_type = self.map_data[y][x]
+                if tile_type != TILE_EMPTY or self.show_grid:
+                    screen_x, screen_y = self.grid_to_screen(x, y)
+                    screen.blit(self.tile_images[tile_type], (screen_x, screen_y))
+        
+        # Draw palette background
+        pygame.draw.rect(screen, (70, 70, 70), self.palette_rect)
+        pygame.draw.rect(screen, WHITE, self.palette_rect, 2)
+        
+        # Draw palette tiles
+        for i, tile_id in enumerate(self.palette_tiles):
+            tile_rect = pygame.Rect(
+                self.palette_rect.x + 10 + i * (EDITOR_TILE_SIZE + 10),
+                self.palette_rect.y + 10,
+                EDITOR_TILE_SIZE,
+                EDITOR_TILE_SIZE
+            )
+            
+            # Draw tile
+            screen.blit(self.tile_images[tile_id], tile_rect)
+            
+            # Highlight selected tile
+            if tile_id == self.current_tile:
+                pygame.draw.rect(screen, RED, tile_rect, 2)
+        
+        # Draw buttons
+        pygame.draw.rect(screen, (100, 100, 100), self.save_button)
+        pygame.draw.rect(screen, (100, 100, 100), self.load_button)
+        pygame.draw.rect(screen, (100, 100, 100), self.clear_button)
+        pygame.draw.rect(screen, (100, 100, 100), self.grid_button)
+        
+        # Draw button text
+        save_text = self.font.render("Save", True, WHITE)
+        load_text = self.font.render("Load", True, WHITE)
+        clear_text = self.font.render("Clear", True, WHITE)
+        grid_text = self.font.render("Toggle Grid", True, WHITE)
+        
+        screen.blit(save_text, (self.save_button.x + 10, self.save_button.y + 5))
+        screen.blit(load_text, (self.load_button.x + 10, self.load_button.y + 5))
+        screen.blit(clear_text, (self.clear_button.x + 10, self.clear_button.y + 5))
+        screen.blit(grid_text, (self.grid_button.x + 5, self.grid_button.y + 5))
+        
+        # Draw current tile info
+        current_tile_text = self.font.render(f"Current Tile: {self.get_tile_name(self.current_tile)}", True, WHITE)
+        screen.blit(current_tile_text, (10, WINDOW_HEIGHT - 30))
+        
+        # Draw coordinates at mouse position
+        mouse_pos = pygame.mouse.get_pos()
+        grid_x, grid_y = self.screen_to_grid(mouse_pos)
+        if 0 <= grid_x < GRID_WIDTH and 0 <= grid_y < GRID_HEIGHT:
+            coord_text = self.font.render(f"Tile: ({grid_x}, {grid_y})", True, WHITE)
+            screen.blit(coord_text, (150, WINDOW_HEIGHT - 30))
+        
+        # Draw map name
+        map_name_text = self.font.render(f"Map: {self.map_name}", True, WHITE)
+        screen.blit(map_name_text, (300, WINDOW_HEIGHT - 30))
+        
+        # Update display
+        pygame.display.flip()
+    
+    def get_tile_name(self, tile_id):
+        names = {
+            TILE_EMPTY: "Empty",
+            TILE_GRASS: "Grass",
+            TILE_WATER: "Water",
+            TILE_STONE: "Stone",
+            TILE_WALL: "Wall",
+            TILE_TREE: "Tree"
+        }
+        return names.get(tile_id, "Unknown")
+
+def main():
+    editor = MapEditor()
+    clock = pygame.time.Clock()
+    
+    running = True
+    while running:
+        running = editor.handle_events()
+        editor.draw()
+        clock.tick(60)
+    
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
