@@ -1,0 +1,105 @@
+import pygame
+import math
+import sys
+import os
+
+# Add the parent directory to sys.path to allow importing from parent directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import constants
+
+class Boulder:
+    def __init__(self, x, y, target_x, target_y):
+        self.start_x = x
+        self.start_y = y
+        self.target_x = target_x
+        self.target_y = target_y
+        
+        # Calculate midpoint
+        self.mid_x = (x + target_x) / 2
+        self.mid_y = (y + target_y) / 2
+        
+        # Calculate distance from player to target
+        distance = math.sqrt((target_x - x)**2 + (target_y - y)**2)
+        
+        # Calculate zenith height based on distance
+        max_height = 500  # Maximum height when target is at player position
+        decay_factor = 0.001  # Reduced decay factor for slower height decrease
+        self.zenith_height = max_height * math.exp(-decay_factor * distance)
+        
+        # Calculate zenith position
+        self.zenith_y = self.mid_y - self.zenith_height
+        
+        # Movement state
+        self.state = 'ascending'  # 'ascending' or 'descending'
+        self.radius = 24
+        self.color = (139, 69, 19)
+        self.glow_color = (150, 100, 50)
+        self.time = 0
+        
+        # Gravity constants
+        self.gravity = 9.8  # Standard gravity in m/s²
+        self.time_scale = 0.1  # Scale factor to convert pixels to meters
+        self.base_speed = constants.PROJECTILE_SPEED * 0.1  # Base speed for the boulder
+        
+        # Debug prints
+        print(f"Boulder created - Distance: {distance:.0f} pixels, Zenith height: {self.zenith_height:.1f} pixels")
+        if distance > 0:
+            print(f"Height ratio: {self.zenith_height/distance:.2f} pixels per distance unit")
+    
+    def update(self, dt):
+        self.time += dt
+        
+        # Calculate t value (0 to 1) for the current position
+        t = min(1, self.time / 1.0)  # Total time is now 1.0 second
+        
+        # Calculate speed based on position in trajectory
+        if t < 0.5:  # Ascending
+            # Calculate speed using more extreme logarithmic deceleration
+            speed_factor = 1.5 - t * 1.2  # Always positive
+            speed = self.base_speed * math.log(speed_factor)
+        else:  # Descending
+            # Calculate speed using more extreme exponential acceleration
+            speed = self.base_speed * math.exp((t - 0.5) * 6 - 1)
+        
+        # Calculate parabolic trajectory
+        # Using a quadratic bezier curve through the three points
+        # P0 = start point, P1 = zenith point, P2 = target point
+        
+        # Calculate control points for bezier curve
+        p0 = (self.start_x, self.start_y)
+        p1 = (self.mid_x, self.zenith_y)
+        p2 = (self.target_x, self.target_y)
+        
+        # Calculate bezier curve position
+        u = 1 - t
+        u2 = u * u
+        t2 = t * t
+        
+        # Calculate position using quadratic bezier formula
+        self.x = u2 * p0[0] + 2 * u * t * p1[0] + t2 * p2[0]
+        self.y = u2 * p0[1] + 2 * u * t * p1[1] + t2 * p2[1]
+        
+        # Debug print speeds
+        if self.time % 0.1 < dt:  # Print every 0.1 seconds
+            print(f"Time: {self.time:.2f}s, Speed: {speed:.1f}px/s")
+            print(f"Position: ({self.x:.1f}, {self.y:.1f})")
+        
+        # Remove boulder when it reaches target
+        if t >= 1:
+            return False
+        
+        # Check if out of bounds
+        if (self.x < 0 or self.x > constants.GAME_WIDTH or 
+            self.y < 0 or self.y > constants.GAME_HEIGHT):
+            return False
+        return True
+        
+    def draw(self, surface, camera_x=0, camera_y=0):
+        # Draw boulder with glow effect
+        pygame.draw.circle(surface, self.glow_color, 
+                         (int(self.x - camera_x), int(self.y - camera_y)), 
+                         self.radius + 4)
+        pygame.draw.circle(surface, self.color, 
+                         (int(self.x - camera_x), int(self.y - camera_y)), 
+                         self.radius)
