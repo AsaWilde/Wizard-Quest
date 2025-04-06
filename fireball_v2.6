@@ -1,0 +1,41 @@
+import pygame
+import math
+import sys
+import os
+
+# Add the parent directory to sys.path to allow importing from parent directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  
+
+# Import constants without display-dependent ones
+import constants
+
+class Fireball:
+    def __init__(self, x, y, dx, dy):
+        self.x = x
+        self.y = y
+        self.dx = dx
+        self.dy = dy
+        self.speed = 999.0
+        self.radius = 16  # Increased from 8 to 16
+        self.color = (255, 100, 0)  # Orange fire color
+        self.glow_color = (255, 200, 0)  # Yellow glow
+        self.lifetime = 60  # Frames before disappearing
+
+    def update(self, dt):
+        # Update position
+        self.x += self.dx * self.speed * dt
+        self.y += self.dy * self.speed * dt
+        
+
+        # Check if out of bounds
+        if (self.x < 0 or self.x > constants.GAME_WIDTH or 
+            self.y < 0 or self.y > constants.GAME_HEIGHT):
+            return False 
+        return True
+        
+    def draw(self, surface, camera_x=0, camera_y=0):
+        # Draw fireball with glow effect
+        pygame.draw.circle(surface, self.glow_color, (int(self.x - camera_x), int(self.y - camera_y)), self.radius + 4)
+        pygame.draw.circle(surface, self.color, (int(self.x - camera_x), int(self.y - camera_y)), self.radius)
+        # Add flame core
+        pygame.draw.circle(surface, (255, 255, 100), (int(self.x - camera_x), int(self.y - camera_y)), self.radius - 6)
