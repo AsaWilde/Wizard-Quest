@@ -1,0 +1,36 @@
+import pygame
+
+# Base constants that don't require display initialization
+WINDOW_WIDTH = 800
+WINDOW_HEIGHT = 600
+ASPECT_RATIO = WINDOW_WIDTH / WINDOW_HEIGHT  # Calculate the aspect ratio
+PLAYER_SPEED = 3
+PLAYER_SIZE = 150  # Changed to be a perfect multiple (4x) of the typical 24px sprite size
+ANIMATION_SPEED = 0.08  # Reduced from 0.2 to make animations play faster
+SPRITE_SIZE = 24  # The size of each sprite in the spritesheet
+ACCELERATION = 10.0  # How quickly to reach max speed
+DECELERATION = 15.0  # Increased from 6.0 to make stops more snappy
+PROJECTILE_SPEED = 999.0  # Updated to 75.0 for 7.5x speed
+PROJECTILE_SIZE = 8  # Size of projectile
+PROJECTILE_COLOR = (180, 100, 255)  # Purple projectile to match wizard's magic
+GAME_STATE_TITLE_SCREEN = -1
+GAME_STATE_PLAYING = 0
+GAME_STATE_PAUSED = 1
+GAME_STATE_GAME_OVER = 2
+GAME_STATE_VICTORY = 3
+
+# Default values for display-dependent constants
+# These will be updated in wizardquest.py after display initialization
+DESKTOP_WIDTH = 1920  # Default fallback value
+DESKTOP_HEIGHT = 1080  # Default fallback value
+GAME_WIDTH = WINDOW_WIDTH  # Default to window width
+GAME_HEIGHT = WINDOW_HEIGHT  # Default to window height
+
+def update_display_constants():
+    """Update display-dependent constants after pygame.display is initialized"""
+    global DESKTOP_WIDTH, DESKTOP_HEIGHT, GAME_WIDTH, GAME_HEIGHT
+    desktop_info = pygame.display.Info()
+    DESKTOP_WIDTH = desktop_info.current_w
+    DESKTOP_HEIGHT = desktop_info.current_h
+    GAME_WIDTH = desktop_info.current_w
+    GAME_HEIGHT = desktop_info.current_h
